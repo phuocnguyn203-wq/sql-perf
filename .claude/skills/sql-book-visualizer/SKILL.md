@@ -28,6 +28,7 @@ PSQL="/c/Program Files/PostgreSQL/18/bin/psql"
 "$PSQL" -U postgres -h localhost -d sqlperf -f sql/ch3-benchmarks.sql   # chương 3: table scale_data 5 triệu row
 sh sql/ch3-load.sh                                                    # chương 3: pgbench theo số query đồng thời
 "$PSQL" -U postgres -h localhost -d sqlperf -f sql/ch4-benchmarks.sql   # chương 4: table sales 1 triệu row, nested loops/hash/merge
+"$PSQL" -U postgres -h localhost -d sqlperf -f sql/ch5-benchmarks.sql   # chương 5: filter predicate, CLUSTER, index-only scan
 ```
 
 Xem site: `npm start` → http://localhost:8000 (cần server vì trang `fetch` dữ liệu trong `data/`). Test logic: `npm test`.

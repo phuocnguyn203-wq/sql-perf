@@ -1,0 +1,1 @@
+{"sub7" : 1000, "ina" : 1, "emp_blocks" : 957, "sales" : 1000000, "sales_sub20" : 10167, "sales_date20" : 484, "sales_date" : 50650, "sales_blocks" : 6370, "corr" : { "emp_sub_before" : 0.019, "emp_sub_after" : 1.000, "sales_subsidiary_id" : 0.015, "sales_sale_date" : 1.000 }, "long_key" : "index row size 3216 exceeds btree version 4 maximum 2704 for index \"long_keys_t\""}

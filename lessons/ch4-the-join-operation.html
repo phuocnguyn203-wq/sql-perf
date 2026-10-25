@@ -16,7 +16,7 @@
 <div class="progress" hidden aria-hidden="true"></div>
 <nav class="bar" id="top" aria-label="Chính">
   <a class="mark" href="../index.html"><span class="sq"></span>SQL Performance, trực quan</a>
-  <ul><li><a href="ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="ch2-the-where-clause.html">Chương 2</a></li><li><a href="ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="ch4-the-join-operation.html" aria-current="page">Chương 4</a></li><li class="opt"><a href="../index.html#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li></ul>
+  <ul><li><a href="ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="ch2-the-where-clause.html">Chương 2</a></li><li><a href="ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="ch4-the-join-operation.html" aria-current="page">Chương 4</a></li><li><a href="ch5-clustering-data.html">Chương 5</a></li><li class="opt"><a href="../index.html#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li></ul>
 </nav>
 <div class="page" id="noi-dung">
 
@@ -510,7 +510,7 @@ $qb-&gt;select('partial s.{sale_id, sale_date, eur_value},'
 <footer class="foot reveal">
   <div class="foot-mark" role="img" aria-label="INDEX"><span>I</span><span>N</span><span>D</span><span>E</span><span>X</span></div>
   <div class="foot-cols">
-    <div><h3>Chương</h3><ul><li><a href="ch1-anatomy-of-an-index.html">Giải phẫu một index</a></li><li><a href="ch2-the-where-clause.html">Mệnh đề WHERE</a></li><li><a href="ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a></li><li><a href="ch4-the-join-operation.html">Phép JOIN</a></li></ul></div>
+    <div><h3>Chương</h3><ul><li><a href="ch1-anatomy-of-an-index.html">Giải phẫu một index</a></li><li><a href="ch2-the-where-clause.html">Mệnh đề WHERE</a></li><li><a href="ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a></li><li><a href="ch4-the-join-operation.html">Phép JOIN</a></li><li><a href="ch5-clustering-data.html">Gom cụm dữ liệu</a></li></ul></div>
     <div><h3>Thí nghiệm</h3><ul><li><a href="../sql/ch4-benchmarks.sql">ch4-benchmarks.sql</a></li></ul></div>
     <div><h3>Nguồn</h3><ul><li><a href="https://sql-performance-explained.com/">SQL Performance Explained</a></li><li><a href="https://use-the-index-luke.com/">Use The Index, Luke</a></li></ul></div>
     <div><p>Số đo chạy trên PostgreSQL thật: employees 100.000 row, sales 1.000.000 row sinh với seed cố định. Một process cho mỗi query (tắt parallel query) để plan giống sách.</p></div>

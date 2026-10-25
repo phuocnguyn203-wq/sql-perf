@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  <title>Chương 5 · Gom cụm dữ liệu</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Patrick+Hand&family=IBM+Plex+Mono:wght@400;600&display=swap"> <!-- taste-skill-ignore: mono chỉ cho code SQL -->
+  <link rel="stylesheet" href="../styles/tokens.css">
+  <link rel="stylesheet" href="../styles/base.css">
+</head>
+<body class="read">
+<a class="skip" href="#noi-dung">Bỏ qua tới nội dung</a>
+<div class="progress" hidden aria-hidden="true"></div>
+<nav class="bar" id="top" aria-label="Chính">
+  <a class="mark" href="../index.html"><span class="sq"></span>SQL Performance, trực quan</a>
+  <ul><li><a href="ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="ch2-the-where-clause.html">Chương 2</a></li><li><a href="ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="ch4-the-join-operation.html">Chương 4</a></li><li><a href="ch5-clustering-data.html" aria-current="page">Chương 5</a></li><li class="opt"><a href="../index.html#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li></ul>
+</nav>
+<div class="page" id="noi-dung">
+
+  <header class="chapter-head wide reveal">
+    <div>
+    <h1>Gom cụm dữ liệu</h1>
+    <p class="sub">Dữ liệu hay được đọc cùng nhau thì nên nằm gần nhau, để đọc ít block hơn.<br>Index làm được việc đó: đây là sức mạnh thứ hai của indexing.</p>
+    </div>
+  </header>
+
+  <noscript><p class="sub">Các hình và plan cần JavaScript.</p></noscript>
+
+  <div class="step reveal">
+    <h3>Sức mạnh thứ hai của indexing</h3>
+    <p>Bài này đi theo chương 5 của cuốn <i>SQL Performance Explained</i> (Markus Winand, 2012); chữ "sách" trong bài là cuốn đó. Sách dùng Oracle; mỗi ví dụ ở đây được chạy lại trên PostgreSQL, và chỗ nào PostgreSQL làm khác, bài ghi rõ.</p>
+    <p>Chữ <b>cluster</b> có nhiều nghĩa. Một star cluster là một cụm sao. Một computer cluster là một nhóm máy tính làm việc cùng nhau, để giải bài toán lớn hoặc để hệ thống luôn sẵn sàng. Nói chung, cluster là những thứ có liên quan và đi cùng nhau.</p>
+    <p>Trong database còn một loại cluster nữa, hay bị hiểu nhầm: <b>data cluster</b>. Gom cụm dữ liệu là lưu những dữ liệu hay được đọc liền nhau ở gần nhau, để đọc chúng tốn ít thao tác IO hơn. Computer cluster cũng rất phổ biến quanh database, nên câu "dùng cluster để database nhanh hơn" có thể hiểu theo cả hai nghĩa. Trong chương này, cluster luôn là data cluster.</p>
+    <p>Data cluster đơn giản nhất trong database SQL là <b>row</b>. Database cố lưu mọi column của một row trong cùng một block. Ngoại lệ là khi row không vừa một block, ví dụ có column kiểu LOB (dữ liệu rất lớn).</p>
+    <aside class="box">
+      <b class="k">Column store</b>
+      Database hướng column (column store) tổ chức table theo column: mỗi block chứa giá trị của một column, của nhiều row. Cách này có lợi khi đọc rất nhiều row nhưng chỉ vài column, kiểu truy cập rất hay gặp trong data warehouse (OLAP).
+    </aside>
+    <figure class="fig wide">
+      <div class="fig-head"><h4>Hai cách gom dữ liệu vào block</h4><span class="tag">Minh họa</span></div>
+      <div class="scroll-x" data-ui><svg class="sk" data-fig="rowcol" role="img" aria-label="Row store: mỗi block chứa vài row, mỗi row đủ bốn column. Column store: mỗi block chứa một column của nhiều row." style="min-width:520px"></svg></div>
+      <figcaption>Row store đọc một row là có đủ column. Column store đọc một column của nhiều row mà không phải đọc các column khác.</figcaption>
+    </figure>
+    <p>Index cũng gom cụm dữ liệu. Chương 1 đã đặt nền cho điều này: leaf node của index lưu các column được index theo thứ tự, nên các giá trị giống nhau nằm cạnh nhau. Nghĩa là index tạo ra những cụm row có giá trị giống nhau. Khả năng này quan trọng tới mức tác giả gọi nó là <b>sức mạnh thứ hai của indexing</b>. Sức mạnh thứ nhất là tree traversal nhanh (chương 1).</p>
+    <nav class="toc" aria-label="Các mục của chương">
+      <ol>
+        <li><a href="#filter">Index Filter Predicates Used Intentionally</a></li>
+        <li><a href="#ios">Index-Only Scan</a></li>
+        <li><a href="#iot">Index-Organized Tables</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <!-- ===================== Filter predicates ===================== -->
+  <section id="filter">
+    <div class="reveal">
+      <h2>Index Filter Predicates Used Intentionally</h2>
+      <p class="sub">Filter predicate thường là dấu hiệu index dùng sai. Nhưng có lúc nên cố ý dùng nó: để loại row không cần ngay trong index, trước khi phải vào table.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Một điều kiện không thu hẹp được đoạn scan</h3>
+      <p>Ở chương 2, <b>index filter predicate</b> là điều kiện được kiểm tra trên các entry của index trong lúc đi theo leaf node chain, nhưng không thu hẹp đoạn index bị scan. Phần lớn trường hợp, nó báo hiệu thứ tự column của index chưa đúng. Nhưng nó cũng có thể được dùng có chủ ý: không phải để scan ít index hơn, mà để gom những dữ liệu cần đọc liền nhau lại với nhau.</p>
+      <p>Ứng viên tốt cho kỹ thuật này là những điều kiện không thể làm access predicate. Ví dụ của sách, trên table <code>employees</code> của chương 2: tìm các nhân viên của một subsidiary có họ chứa chuỗi "INA" ở bất kỳ đâu.</p>
+      <pre class="sql"><code>SELECT first_name, last_name, subsidiary_id, phone_number
+  FROM employees
+ WHERE subsidiary_id = ?
+   AND UPPER(last_name) LIKE '%INA%';</code></pre>
+      <p>Hai điều kiện ở đây rất khác nhau:</p>
+      <ul class="sq-list">
+        <li><span><code>UPPER(last_name) LIKE '%INA%'</code> bắt đầu bằng wildcard. Như chương 2 (mục LIKE) đã cho thấy, LIKE có wildcard ở đầu không dùng được tree của index. Index trên <code>last_name</code> hay <code>UPPER(last_name)</code> đều không thu hẹp được đoạn scan.</span></li>
+        <li><span><code>subsidiary_id = ?</code> thì dùng index rất tốt. Không cần tạo index mới: từ chương 2, <code>subsidiary_id</code> đã là column đầu của index primary key <code>(subsidiary_id, employee_id)</code>.</span></li>
+      </ul>
+      <p>Plan Oracle trong sách, chỉ có index primary key:</p>
+      <pre class="sql"><code>|Id | Operation                   | Name       | Rows | Cost |
+| 0 | SELECT STATEMENT            |            |   17 |  230 |
+|*1 |  TABLE ACCESS BY INDEX ROWID| EMPLOYEES  |   17 |  230 |
+|*2 |   INDEX RANGE SCAN          | EMPLOYEE_PK|  333 |    2 |
+
+Predicate Information (identified by operation id):
+   1 - filter(UPPER("LAST_NAME") LIKE '%INA%')
+   2 - access("SUBSIDIARY_ID"=TO_NUMBER(:A))</code></pre>
+      <p>Cost tăng gấp trăm lần, từ 2 ở bước <code>INDEX RANGE SCAN</code> lên 230 ở bước <code>TABLE ACCESS BY INDEX ROWID</code>: phần lớn công việc nằm ở bước vào table. Bước index trả về 333 row của subsidiary đó; bước vào table lấy cả 333 row rồi mới kiểm tra LIKE, giữ lại 17.</p>
+      <p>Trên dữ liệu ở đây, mình dùng subsidiary 7: có <span data-fact="c:sub7">1.000</span> nhân viên, trong đó <span data-fact="c:ina">1</span> người có họ chứa "INA". PostgreSQL chạy query đúng như Oracle:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Chỉ có index primary key</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="filter-pk"></div>
+      </figure>
+      <p><code>Bitmap Index Scan</code> lấy <span data-fact="c:sub7">1.000</span> địa chỉ của subsidiary 7 từ index. <code>Bitmap Heap Scan</code> đọc các row đó từ table, rồi mới kiểm tra LIKE (dòng <code>filter</code>) và bỏ <span data-fact="p:filter-pk:removed">999</span> row. Table block phải đọc: <span data-fact="p:filter-pk:blocks">641</span>.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Kiểm tra LIKE trước hay sau khi vào table</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="filter" role="img" aria-label="Trên: index chỉ có subsidiary_id, phải lấy 1.000 row từ table rồi mới kiểm tra LIKE. Dưới: index có thêm last_name, LIKE được kiểm tra ngay trên entry, không phải vào table." style="min-width:520px"></svg></div>
+        <figcaption>Nếu index chứa sẵn column mà điều kiện cần, các row không khớp bị loại ngay trong index, trước bước tốn kém nhất là vào table.</figcaption>
+      </figure>
+    </div>
+
+    <div class="step reveal">
+      <h3>Vào table nhanh hay chậm tùy row nằm gần hay xa nhau</h3>
+      <p>Bước vào table không nhất thiết là nút thắt. Nếu mọi row cần lấy nằm trong cùng một table block, database đọc một block là đủ. Nếu chúng rải trên rất nhiều block, database phải đọc từng ấy block. Nghĩa là hiệu năng phụ thuộc vào cách row phân bố trong table: phụ thuộc vào việc row được gom cụm tốt hay không.</p>
+      <aside class="box">
+        <b class="k">Lưu ý</b>
+        Mức độ tương quan giữa thứ tự của index và thứ tự của row trong table là một thước đo hiệu năng, gọi là <b>index clustering factor</b>.
+      </aside>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Clustering factor</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="clustering" role="img" aria-label="Trái: tám entry liền nhau của index trỏ vào hai table block. Phải: tám entry trỏ vào tám block khác nhau." style="min-width:520px"></svg></div>
+        <figcaption>Cùng tám entry liền nhau trong index. Nếu row của chúng nằm gần nhau trong table, chỉ phải đọc vài block.</figcaption>
+      </figure>
+      <aside class="box">
+        <b class="k">Index clustering factor</b>
+        Index clustering factor đo gián tiếp xác suất hai entry liền nhau của index trỏ tới cùng một table block. Optimizer dùng xác suất này khi tính cost của bước <code>TABLE ACCESS BY INDEX ROWID</code>. PostgreSQL không có con số mang tên này, nhưng có một thứ tương tự cho từng column: <code>correlation</code> trong view <code>pg_stats</code>, từ −1 tới 1. Giá trị gần 1 hoặc −1 nghĩa là thứ tự vật lý của row gần khớp với thứ tự của column; gần 0 nghĩa là row nằm lộn xộn.
+      </aside>
+      <p>Ở table <code>employees</code>, row được thêm vào theo thứ tự ngẫu nhiên, nên <code>subsidiary_id</code> có correlation <span data-fact="r:emp_sub_before">0,019</span>: gần như không có thứ tự. Đó là lý do <span data-fact="c:sub7">1.000</span> nhân viên của subsidiary 7 nằm rải trên <span data-fact="p:filter-pk:blocks">641</span> trong tổng số <span data-fact="c:emp_blocks">957</span> block của table.</p>
+      <p>Thực ra có thể làm query nhanh hơn bằng cách sắp lại row trong table theo đúng thứ tự của index. PostgreSQL có sẵn lệnh cho việc này, <code>CLUSTER</code>: nó ghi lại cả table theo thứ tự của một index. Mình thử trên một bản sao của <code>employees</code>, cùng dữ liệu, cùng query:</p>
+      <pre class="sql"><code>CLUSTER employees_copy USING employees_copy_pkey;</code></pre>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Cùng query, trước và sau khi sắp lại row</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="cluster"></div>
+        <figcaption>Trung vị 21 lần chạy. Sau <code>CLUSTER</code>, correlation của <code>subsidiary_id</code> là <span data-fact="r:emp_sub_after">1</span>: nhân viên của một subsidiary nằm liền nhau.</figcaption>
+      </figure>
+      <p>Số block giảm từ <span data-fact="p:cluster-before:blocks">641</span> xuống <span data-fact="p:cluster-after:blocks">16</span>. Nhưng sách cho rằng cách này, gọi là <b>row sequencing</b>, hiếm khi áp dụng được. Row của một table chỉ xếp được theo một thứ tự, nên chỉ tối ưu được cho một index. Kể cả khi chọn được index đó, phần lớn database chỉ có công cụ rất thô cho việc này. Với PostgreSQL, <code>CLUSTER</code> chỉ sắp một lần: row thêm hay sửa sau đó không giữ thứ tự, và trong lúc chạy, lệnh này khóa cả table.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Thêm column vào index để gom cụm</h3>
+      <p>Đây là chỗ sức mạnh thứ hai của indexing phát huy. Có thể thêm nhiều column vào index, và chúng tự động được lưu theo một thứ tự xác định. Index vì vậy là công cụ gom cụm dữ liệu vừa mạnh vừa đơn giản.</p>
+      <p>Với query trên, sách mở rộng index để chứa mọi column trong WHERE, kể cả column không thu hẹp được đoạn scan:</p>
+      <pre class="sql"><code>CREATE INDEX empsubupnam ON employees
+       (subsidiary_id, UPPER(last_name));</code></pre>
+      <p><code>subsidiary_id</code> đứng đầu nên vẫn là access predicate. <code>UPPER(last_name)</code> cho phép kiểm tra LIKE ngay trên entry của index, như một index filter predicate. Plan Oracle trong sách với index này:</p>
+      <pre class="sql"><code>|Id | Operation                   | Name       | Rows | Cost |
+| 0 | SELECT STATEMENT            |            |   17 |   20 |
+| 1 |  TABLE ACCESS BY INDEX ROWID| EMPLOYEES  |   17 |   20 |
+|*2 |   INDEX RANGE SCAN          | EMPSUBUPNAM|   17 |    3 |
+
+Predicate Information (identified by operation id):
+   2 - access("SUBSIDIARY_ID"=TO_NUMBER(:A))
+       filter(UPPER("LAST_NAME") LIKE '%INA%')</code></pre>
+      <p>Các thao tác giống hệt plan trước, nhưng cost giảm từ 230 xuống 20. Predicate information cho thấy lý do: LIKE giờ là filter của bước <code>INDEX RANGE SCAN</code> (dòng 2), không còn ở bước vào table. Index chỉ trả về 17 row thay vì 333, nên database chỉ vào table 17 lần. Cost của bước index tăng từ 2 lên 3, vì index có thêm column nên lớn hơn; đổi lại như vậy là đáng.</p>
+      <p>Trên PostgreSQL, kết quả khác hẳn. Có index <code>empsubupnam</code>, PostgreSQL vẫn chọn đúng plan cũ, chỉ dùng index primary key. Ép nó dùng <code>empsubupnam</code> (tạm bỏ primary key và tắt các kiểu đọc khác trong một transaction) thì thấy vì sao:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Ép dùng index empsubupnam của sách</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="filter-forced"></div>
+      </figure>
+      <p>Điều kiện LIKE vẫn nằm ở dòng <code>filter</code>, kiểm tra <em>sau</em> khi đã lấy row từ table: <span data-fact="p:filter-forced:blocks">1.006</span> block. PostgreSQL dùng index thường (<code>Index Scan</code>, <code>Bitmap Index Scan</code>) chỉ để tìm row theo <code>index cond</code>; nó không kiểm tra các điều kiện khác trên entry của index. Vì vậy thêm <code>UPPER(last_name)</code> vào index không giúp gì, và planner tự bỏ qua index đó.</p>
+      <p>PostgreSQL chỉ kiểm tra điều kiện trên entry của index khi chạy <b>Index Only Scan</b>: thao tác đọc mọi thứ từ index mà không vào table, chủ đề của mục sau. Muốn vậy, index phải chứa mọi column mà query cần, cả ở SELECT. Sách có sẵn một ví dụ như vậy ở phần nói về SQL Server: từ khóa <code>INCLUDE</code> thêm column vào leaf node của index chỉ để đọc, không dùng để tìm. PostgreSQL có <code>INCLUDE</code> từ bản 11. Index của sách, với <code>last_name</code> gốc thay cho <code>UPPER(last_name)</code>:</p>
+      <pre class="sql"><code>CREATE INDEX empsubname
+    ON employees (subsidiary_id, last_name)
+INCLUDE (phone_number, first_name);</code></pre>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Index chứa mọi column của query</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="filter-include"></div>
+      </figure>
+      <p>Giờ LIKE được kiểm tra trên entry của index, và PostgreSQL không cần vào table: <span data-fact="p:filter-include:blocks">12</span> block. (Plan có thể ghi vài "Heap Fetches": đó là những lần PostgreSQL vẫn phải vào table để kiểm tra row còn hợp lệ hay không, giải thích ở mục sau.)</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Cùng query, ba index</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="filter"></div>
+        <figcaption>Trung vị 21 lần chạy, theo <code>EXPLAIN ANALYZE</code>.</figcaption>
+      </figure>
+      <aside class="box important">
+        <b class="k">Cảnh báo</b>
+        Đừng tạo index mới chỉ để có filter predicate. Hãy mở rộng một index có sẵn, để giữ công bảo trì thấp. Với một số database, có thể thêm vào index của primary key cả những column không thuộc primary key.
+      </aside>
+      <p>Ví dụ nhỏ này có vẻ xác nhận lời khuyên phổ biến "index mọi column trong WHERE". Lời khuyên đó bỏ qua thứ tự column, thứ quyết định điều kiện nào được dùng làm access predicate, và vì thế ảnh hưởng rất lớn tới hiệu năng. Không bao giờ nên để thứ tự column cho may rủi.</p>
+      <p>Kích thước index cũng tăng theo số column, nhất là column kiểu text. Index lớn hơn không làm hiệu năng tốt hơn, dù khả năng mở rộng theo logarit giảm bớt ảnh hưởng. Đừng thêm mọi column trong WHERE vào index. Chỉ dùng index filter predicate có chủ ý, để giảm lượng dữ liệu ở một bước sớm hơn.</p>
+    </div>
+  </section>
+
+  <!-- ===================== Index-Only Scan ===================== -->
+  <section id="ios">
+    <div class="reveal">
+      <h2>Index-Only Scan</h2>
+      <p class="sub">Nếu index chứa đủ mọi column mà query cần, database trả lời mà không cần vào table. Một trong những cách tinh chỉnh mạnh nhất.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Index chứa cả column của SELECT</h3>
+      <p>Index-only scan không chỉ tránh vào table để kiểm tra WHERE. Nó tránh vào table hoàn toàn, nếu database tìm được cả các column của SELECT ngay trong index.</p>
+      <p>Ví dụ dùng table <code>sales</code> của chương 4: mỗi row là một lần bán hàng, ghi nhân viên nào bán (<code>employee_id</code>, <code>subsidiary_id</code>), ngày nào (<code>sale_date</code>), bao nhiêu tiền (<code>eur_value</code>). Table có <span data-fact="c:sales">1.000.000</span> lần bán của 10 năm. Khác chương 4 ở một điểm: ở đây row được thêm theo thứ tự thời gian, như một table bán hàng thật, nơi lần bán mới luôn được ghi vào cuối table. Điểm này sẽ quan trọng ở phần sau.</p>
+      <p>Query của sách tính tổng tiền bán của một subsidiary:</p>
+      <pre class="sql"><code>SELECT SUM(eur_value)
+  FROM sales
+ WHERE subsidiary_id = ?;</code></pre>
+      <p>Để cả query chạy được chỉ bằng index, index phải chứa mọi column trong câu SQL, kể cả <code>eur_value</code> ở SELECT. Điều kiện WHERE vẫn được ưu tiên, nên <code>subsidiary_id</code> đứng đầu để làm access predicate:</p>
+      <pre class="sql"><code>CREATE INDEX sales_sub_eur
+    ON sales
+     ( subsidiary_id, eur_value );</code></pre>
+      <p>Plan Oracle trong sách: bước <code>INDEX RANGE SCAN</code> không có bước <code>TABLE ACCESS BY INDEX ROWID</code> theo sau.</p>
+      <pre class="sql"><code>| Id  | Operation         | Name          |  Rows | Cost |
+|   0 | SELECT STATEMENT  |               |     1 |  104 |
+|   1 |  SORT AGGREGATE   |               |     1 |      |
+|*  2 |   INDEX RANGE SCAN| SALES_SUB_EUR | 40388 |  104 |
+
+Predicate Information (identified by operation id):
+   2 - access("SUBSIDIARY_ID"=TO_NUMBER(:A))</code></pre>
+      <p>Index chứa trọn query nên còn được gọi là <b>covering index</b>. Sách lưu ý tên này dễ gây hiểu lầm, vì nghe như một tính chất của index; cụm "index-only scan" đúng hơn, vì đó là một thao tác trong plan. Index có bản sao của <code>eur_value</code>, nên database dùng luôn giá trị trong index.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Index-only scan</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="ios" role="img" aria-label="Index sales_sub_eur chứa subsidiary_id và eur_value; tổng được cộng ngay trong index, mũi tên tới table bị gạch." style="min-width:520px"></svg></div>
+        <figcaption>Mọi thứ query cần đều có trong index, nên bước vào table biến mất.</figcaption>
+      </figure>
+      <p>Trên PostgreSQL, với subsidiary 20 (<span data-fact="c:sales_sub20">10.167</span> lần bán):</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>SUM(eur_value) với index sales_sub_eur</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="ios-sum"></div>
+      </figure>
+      <p>PostgreSQL ghi rõ tên thao tác: <code>Index Only Scan</code>. Nó có thêm một chi tiết sách không nói: mỗi row trong table có thể đang bị transaction khác sửa, và chỉ table mới biết row nào còn hợp lệ. PostgreSQL giữ một <b>visibility map</b>, đánh dấu những block mà mọi row đều chắc chắn hợp lệ, và chỉ vào table ở các block chưa được đánh dấu. Lệnh <code>VACUUM</code> cập nhật bản đồ này. Dòng "Heap Fetches" trong plan đếm số lần phải vào table như vậy: ở đây là <span data-fact="p:ios-sum:heap">0</span>.</p>
+      <p>Để thấy index-only scan tiết kiệm được gì, so với cùng query khi index chỉ có <code>subsidiary_id</code>: khi đó database phải vào table lấy <code>eur_value</code> của từng lần bán.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Cùng tổng, có và không có index-only scan</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="ios"></div>
+        <figcaption>Trung vị 21 lần chạy. Cột thứ ba là query thêm điều kiện ngày, ở phần dưới.</figcaption>
+      </figure>
+      <p>Trong sách, optimizer ước tính phải cộng hơn 40.000 row, nên index-only scan tránh được 40.000 lần vào table, nếu mỗi row nằm ở một block khác nhau. Ở đây, <span data-fact="c:sales_sub20">10.167</span> lần bán của subsidiary 20 nằm rải trên <span data-fact="p:ios-noios:blocks">5.105</span> block; index-only scan chỉ đọc <span data-fact="p:ios-sum:blocks">43</span> block của index.</p>
+      <p>Nếu index có clustering factor tốt, tức các row cần đọc nằm gọn trong vài block, lợi ích sẽ nhỏ hơn nhiều. Số row được chọn cũng giới hạn lợi ích: chọn một row thì chỉ tiết kiệm được một lần vào table, và tree traversal cũng phải đọc vài block, nên phần tiết kiệm có thể không đáng kể.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Lợi ích hiệu năng của index-only scan phụ thuộc vào số row được đọc và index clustering factor.
+      </aside>
+      <p>Index-only scan là một chiến lược index mạnh tay. Đừng thiết kế index cho index-only scan chỉ vì đoán, vì nó tốn bộ nhớ và tăng công bảo trì cho các câu update (chương 8). Trên thực tế, nên index mà chưa tính tới SELECT, và chỉ mở rộng index khi cần.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Thêm một điều kiện, query lại chậm hơn</h3>
+      <p>Index-only scan cũng có thể gây bất ngờ khó chịu, ví dụ khi giới hạn query vào các lần bán gần đây:</p>
+      <pre class="sql"><code>SELECT SUM(eur_value)
+  FROM sales
+ WHERE subsidiary_id = ?
+   AND sale_date &gt; ?;</code></pre>
+      <p>Chưa xem plan, có thể nghĩ query sẽ nhanh hơn, vì chọn ít row hơn. Nhưng WHERE giờ nhắc tới <code>sale_date</code>, column không có trong <code>sales_sub_eur</code>, nên database phải vào table để lấy nó. Plan Oracle trong sách:</p>
+      <pre class="sql"><code>|Id | Operation                    | Name      | Rows  |Cost |
+| 0 | SELECT STATEMENT             |           |     1 | 371 |
+| 1 |  SORT AGGREGATE              |           |     1 |     |
+|*2 |   TABLE ACCESS BY INDEX ROWID| SALES     |  2019 | 371 |
+|*3 |    INDEX RANGE SCAN          | SALES_DATE| 10541 |  30 |
+
+Predicate Information (identified by operation id):
+   2 - filter("SUBSIDIARY_ID"=TO_NUMBER(:A))
+   3 - access("SALE_DATE"&gt;:B)</code></pre>
+      <p>Oracle không dùng <code>sales_sub_eur</code> nữa mà chuyển sang index <code>sales_date</code> (trên <code>sale_date</code>, còn lại từ chương 4), rồi kiểm tra <code>subsidiary_id</code> sau khi vào table. Trên PostgreSQL, với subsidiary 20 và các lần bán sau 30/6/2024 (<span data-fact="c:sales_date20">484</span> lần):</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Thêm điều kiện sale_date</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="ios-date"></div>
+      </figure>
+      <p>PostgreSQL chọn đúng như Oracle: <code>Index Scan</code> trên <code>sales_date</code>, rồi bỏ <span data-fact="p:ios-date:removed">50.166</span> row không thuộc subsidiary 20. Query chọn ít row hơn mà chậm hơn: <span data-fact="t:ios_date">5,8</span> ms so với <span data-fact="t:ios_sum">1,7</span> ms (biểu đồ ở trên). Điều quyết định không phải query trả về bao nhiêu row, mà database phải kiểm tra bao nhiêu row để tìm ra chúng.</p>
+      <aside class="box important">
+        <b class="k">Cảnh báo</b>
+        Mở rộng WHERE có thể làm hiệu năng thay đổi "phi lý". Hãy xem plan trước khi mở rộng query.
+      </aside>
+      <p>Khi một index không còn dùng được cho index-only scan, optimizer chọn plan tốt nhất kế tiếp. Theo sách, index <code>sales_date</code> có hai lợi thế. Thứ nhất, optimizer tin điều kiện trên <code>sale_date</code> chọn lọc hơn (cột "Rows": khoảng 10.000 so với 40.000). Ước tính này thật ra tùy tiện, vì query dùng bind parameter: truyền ngày của lần bán đầu tiên thì điều kiện chọn cả table. Thứ hai, và hợp lý hơn: <code>sales_date</code> có clustering factor tốt.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Hai column, hai mức gom cụm</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="corr" role="img" style="min-width:520px"></svg></div>
+        <figcaption>Lần bán mới luôn được ghi vào cuối table, nên các lần bán gần đây nằm liền nhau. Lần bán của một subsidiary thì rải khắp table.</figcaption>
+      </figure>
+      <p>Table <code>sales</code> chỉ lớn lên theo thời gian. Chừng nào không xóa row, row mới luôn được ghi vào cuối table, nên thứ tự của table khớp với thứ tự của index trên ngày. Ở đây, <code>sale_date</code> có correlation <span data-fact="r:sales_sale_date">1</span>, còn <code>subsidiary_id</code> chỉ <span data-fact="r:sales_subsidiary_id">0,015</span>. Với index có clustering factor tốt, các row được chọn nằm gần nhau, nên chỉ phải đọc ít block: <span data-fact="p:ios-date:blocks">373</span> block ở plan trên. Query có thể đủ nhanh mà không cần index-only scan; khi đó nên bỏ các column không cần khỏi index kia.</p>
+      <aside class="box">
+        <b class="k">Lưu ý</b>
+        Một số index tự nhiên có clustering factor tốt, nên lợi ích của index-only scan với chúng rất nhỏ.
+      </aside>
+      <p>Ở ví dụ này có một sự trùng hợp may mắn: điều kiện mới vừa làm mất index-only scan, vừa mở ra một access path mới, nên optimizer hạn chế được thiệt hại. Nhưng cũng có thể làm mất index-only scan bằng cách thêm column vào các mệnh đề khác. Thêm một column vào SELECT thì không bao giờ mở ra access path mới để bù lại.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Hãy giữ gìn các index-only scan của bạn. Thêm chú thích nhắc rằng query đang dựa vào index-only scan, và dẫn tới trang này để ai cũng đọc được lý do.
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Function-based index, SELECT * và giới hạn kích thước</h3>
+      <p>Function-based index cũng có thể gây bất ngờ với index-only scan. Index trên <code>UPPER(last_name)</code> chỉ chứa họ đã viết hoa, không chứa <code>last_name</code> gốc, nên không dùng được cho index-only scan khi SELECT có <code>last_name</code>. Đó là lý do ở mục trước, index với <code>INCLUDE</code> dùng <code>last_name</code> gốc: nó vừa phục vụ được điều kiện LIKE, vừa phục vụ được SELECT.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Luôn ưu tiên index dữ liệu gốc, vì đó thường là thông tin hữu ích nhất có thể đưa vào index. Tránh function-based index cho những expression không dùng được làm access predicate.
+      </aside>
+      <p>Query tổng hợp như ví dụ trên là ứng viên tốt cho index-only scan: đọc nhiều row nhưng chỉ vài column, nên một index nhỏ là đủ. Query đọc càng nhiều column, index càng phải chứa nhiều column. Vì vậy developer chỉ nên chọn những column thật sự cần.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Tránh <code>SELECT *</code>; chỉ lấy những column cần dùng.
+      </aside>
+      <p>Ngoài chuyện tốn chỗ, index nhiều column còn chạm giới hạn của database. Phần lớn database giới hạn số column mỗi index và tổng kích thước một entry. Sách liệt kê các giới hạn chính. Với PostgreSQL, sách (viết cho bản 9.2) ghi 2.713 byte; PostgreSQL <span data-fact="version">18</span> báo lỗi này khi thêm một chuỗi 3.200 byte vào column có index:</p>
+      <pre class="sql err"><code>ERROR: <span data-fact="c:long_key">index row size 3216 exceeds btree version 4 maximum 2704</span></code></pre>
+      <aside class="box">
+        <b class="k">Giới hạn theo database (theo sách)</b>
+        <b>MySQL</b> 5.6 với InnoDB: mỗi column tối đa 767 byte, tổng các column 3.072 byte; MyISAM tối đa 16 column và 1.000 byte. MySQL có "prefix indexing": chỉ index vài ký tự đầu của column, ví dụ <code>(last_name(10))</code>; index như vậy không còn bản sao đầy đủ của column, nên ít giúp được index-only scan. <b>Oracle</b>: kích thước khóa tối đa phụ thuộc kích thước block (khoảng 75% block), tối đa 32 column. <b>PostgreSQL</b>: có index-only scan từ bản 9.2, tối đa 32 column mỗi index B-tree, lỗi chỉ xuất hiện khi insert hay update vượt giới hạn. <b>SQL Server</b>: tối đa 900 byte và 16 column khóa, nhưng có <code>INCLUDE</code> để thêm column dài tùy ý chỉ để phục vụ index-only scan; PostgreSQL có <code>INCLUDE</code> từ bản 11.
+      </aside>
+      <aside class="box">
+        <b class="k">Thử nghĩ</b>
+        Query không chọn column nào của table thường chạy bằng index-only scan. Bạn nghĩ ra được một ví dụ có ý nghĩa không?
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===================== Index-Organized Tables ===================== -->
+  <section id="iot">
+    <div class="reveal">
+      <h2>Index-Organized Tables</h2>
+      <p class="sub">Đưa mọi column vào index thì còn cần table làm gì? Một số database dùng chính index làm nơi lưu table. Nghe hấp dẫn, nhưng ích lợi mất đi ngay khi cần index thứ hai.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Table chính là một B-tree</h3>
+      <p>Index-only scan trả lời query chỉ bằng dữ liệu dư thừa trong index; dữ liệu gốc trong table (heap table, chương 1) không cần tới. Đẩy ý này thêm một bước: đưa mọi column vào index, thì còn cần heap table làm gì?</p>
+      <p>Một số database thật sự dùng index làm nơi lưu chính của table. Oracle gọi đó là <b>index-organized table</b> (IOT); các database khác gọi là <b>clustered index</b>. Một IOT là một B-tree index không có heap table đi kèm. Nó hứa hẹn hai lợi ích: tiết kiệm chỗ của heap table, và mọi lần đọc clustered index tự động là index-only scan. Cả hai nghe hay, nhưng khó đạt được trên thực tế.</p>
+      <p>Nhược điểm lộ ra khi tạo index thứ hai trên cùng table. Như mọi index, index thứ hai này, gọi là <b>secondary index</b>, trỏ tới dữ liệu gốc của table, mà dữ liệu đó nằm trong clustered index. Ở đó row không đứng yên như trong heap table, mà có thể bị dời đi bất cứ lúc nào để giữ thứ tự của index. Vì vậy secondary index không thể lưu vị trí vật lý của row; nó phải lưu một khóa logic.</p>
+      <p>Hai hình của sách cùng tìm mọi lần bán ngày 23/5/2012. Hình 5.1 là trường hợp heap table, hai bước: (1) <code>INDEX RANGE SCAN</code>; (2) <code>TABLE ACCESS BY INDEX ROWID</code>.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 5.1</span><h4>Tra index trên heap table</h4><span class="tag">Hình trong sách</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="f51" role="img" aria-label="Index trên sale_date: hai entry 2012-05-23 có ROWID trỏ thẳng tới hai row trong hai block của heap table." style="min-width:560px"></svg></div>
+        <figcaption>ROWID là con trỏ trực tiếp: mỗi row khớp chỉ cần một lần đọc table.</figcaption>
+      </figure>
+      <p>Bước vào table có thể thành nút thắt, nhưng mỗi row vẫn chỉ cần một lần đọc, vì index có ROWID trỏ thẳng tới row. Với secondary index trên IOT thì khác: nó không lưu con trỏ vật lý, mà chỉ lưu giá trị khóa của clustered index, gọi là <b>clustering key</b>, thường là primary key của table.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 5.2</span><h4>Secondary index trên IOT</h4><span class="tag">Hình trong sách</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="f52" role="img" aria-label="Secondary index trên sale_date trả về sale_id 73 và 87. Với mỗi sale_id, database duyệt B-tree của clustered index từ root qua branch tới leaf để lấy row." style="min-width:560px"></svg></div>
+        <figcaption>B-tree của clustered index đứng chen giữa secondary index và dữ liệu: mỗi row khớp cần thêm một lần tree traversal.</figcaption>
+      </figure>
+      <p>Đọc secondary index không cho ra ROWID mà cho ra một khóa logic để tìm trong clustered index. Tìm theo khóa đó không phải một lần đọc, mà là cả một lần tree traversal. Nghĩa là đọc table qua secondary index phải tra hai index: secondary index một lần (<code>INDEX RANGE SCAN</code>), rồi clustered index một lần cho mỗi row tìm được (<code>INDEX UNIQUE SCAN</code>).</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Đọc index-organized table qua secondary index rất kém hiệu quả.
+      </aside>
+      <p>Có thể tránh việc này như cách tránh vào heap table: dùng index-only scan, ở đây nói đúng hơn là "secondary-index-only scan". Lợi ích còn lớn hơn, vì nó không chỉ tránh một lần đọc, mà tránh cả một lần <code>INDEX UNIQUE SCAN</code>.</p>
+      <p>Database tận dụng mọi dữ liệu dư thừa nó có. Secondary index lưu clustering key ở mỗi entry, nên query chỉ chọn clustering key không cần vào IOT. Trong sách, <code>sales_iot</code> là IOT với clustering key <code>sale_id</code>, và <code>sales_iot_date</code> là index chỉ trên <code>sale_date</code>:</p>
+      <pre class="sql"><code>SELECT sale_id
+  FROM sales_iot
+ WHERE sale_date = ?;
+
+| Id | Operation        | Name           | Cost |
+|  0 | SELECT STATEMENT |                |    4 |
+|* 1 |  INDEX RANGE SCAN| SALES_IOT_DATE |    4 |</code></pre>
+      <p>Chọn column khác thì database phải chạy <code>INDEX UNIQUE SCAN</code> trên clustered index cho mỗi row, và cost tăng từ 4 lên 13:</p>
+      <pre class="sql"><code>SELECT eur_value
+  FROM sales_iot
+ WHERE sale_date = ?;
+
+| Id  | Operation         | Name           | Cost |
+|   0 | SELECT STATEMENT  |                |   13 |
+|*  1 |  INDEX UNIQUE SCAN| SALES_IOT_PK   |   13 |
+|*  2 |   INDEX RANGE SCAN| SALES_IOT_DATE |    4 |</code></pre>
+      <p>Rốt cuộc, IOT và clustered index không hữu ích như thoạt nhìn. Lợi ích trên clustered index dễ mất khi dùng secondary index. Clustering key thường dài hơn ROWID, nên secondary index lớn hơn so với trên heap table, thường bù hết phần chỗ tiết kiệm được nhờ bỏ heap table. Sức mạnh của IOT chủ yếu ở các table không cần index thứ hai. Heap table có lợi thế là một bản gốc đứng yên, dễ trỏ tới.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Table chỉ có một index thì tốt nhất nên là clustered index hay index-organized table. Table có nhiều index thường có lợi hơn với heap table. Vẫn có thể dùng index-only scan để tránh vào table: được hiệu năng đọc của clustered index mà không làm chậm các index khác.
+      </aside>
+      <aside class="box">
+        <b class="k">Vì sao secondary index không có ROWID</b>
+        Secondary index cũng muốn có con trỏ trực tiếp tới row. Nhưng điều đó chỉ làm được nếu row đứng yên ở một vị trí cố định, mà row nằm trong một cấu trúc index được giữ thứ tự thì không đứng yên được. Giữ thứ tự index thỉnh thoảng phải dời row, kể cả khi bản thân row không bị sửa. Ví dụ một câu insert có thể tách một leaf node để lấy chỗ cho entry mới, và một số entry bị chuyển sang block mới. Heap table thì không giữ thứ tự nào: database ghi row mới vào chỗ nào còn trống, và một khi đã ghi, row không di chuyển.
+      </aside>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Tách leaf node làm row đổi chỗ</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="split" role="img" aria-label="Leaf node đầy với 72, 73, 87, 88. Thêm 80 thì leaf tách đôi: 87 và 88 sang block mới, dù không bị sửa." style="min-width:520px"></svg></div>
+        <figcaption>Thêm một row có thể làm row khác đổi block. Vì vậy secondary index trên IOT phải lưu khóa, không lưu vị trí.</figcaption>
+      </figure>
+      <aside class="box">
+        <b class="k">Theo database (theo sách)</b>
+        <b>MySQL</b>: engine MyISAM chỉ dùng heap table, InnoDB luôn dùng clustered index, nên không có lựa chọn. <b>Oracle</b>: mặc định dùng heap table; tạo IOT bằng <code>ORGANIZATION INDEX</code>, clustering key luôn là primary key. <b>PostgreSQL</b>: chỉ có heap table. Lệnh <code>CLUSTER</code> sắp lại heap table theo một index, như phép đo ở mục đầu, nhưng chỉ một lần. <b>SQL Server</b>: mặc định dùng clustered index với primary key làm clustering key, nhưng có thể chọn column bất kỳ, kể cả không unique; tạo heap table bằng <code>NONCLUSTERED</code> trong định nghĩa primary key. Hành vi mặc định này của SQL Server hay gây vấn đề hiệu năng khi dùng secondary index.
+      </aside>
+    </div>
+  </section>
+</div>
+
+<footer class="foot reveal">
+  <div class="foot-mark" role="img" aria-label="INDEX"><span>I</span><span>N</span><span>D</span><span>E</span><span>X</span></div>
+  <div class="foot-cols">
+    <div><h3>Chương</h3><ul><li><a href="ch1-anatomy-of-an-index.html">Giải phẫu một index</a></li><li><a href="ch2-the-where-clause.html">Mệnh đề WHERE</a></li><li><a href="ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a></li><li><a href="ch4-the-join-operation.html">Phép JOIN</a></li><li><a href="ch5-clustering-data.html">Gom cụm dữ liệu</a></li></ul></div>
+    <div><h3>Thí nghiệm</h3><ul><li><a href="../sql/ch5-benchmarks.sql">ch5-benchmarks.sql</a></li></ul></div>
+    <div><h3>Nguồn</h3><ul><li><a href="https://sql-performance-explained.com/">SQL Performance Explained</a></li><li><a href="https://use-the-index-luke.com/">Use The Index, Luke</a></li></ul></div>
+    <div><p>Số đo chạy trên PostgreSQL thật: employees 100.000 row, sales 1.000.000 row sinh với seed cố định. Một process cho mỗi query (tắt parallel query) để plan giống sách.</p></div>
+  </div>
+  <div class="foot-last"><span>Nội dung tóm tắt từ sách của Markus Winand.</span><a class="top" href="#top">Lên đầu trang</a></div>
+</footer>
+
+<script src="../vendor/framer-motion-dom.js"></script>
+<script src="../vendor/rough.js"></script>
+<script type="module">import { site } from '../scripts/motion.js'; site();</script>
+<script type="module">
+  import { planTable, bars, blocks, fmt } from '../scripts/visualizations/plans.js';
+  import { figRowColumn, figFilter, figClustering, figIndexOnly, figCorrelation, fig51, fig52, figSplit } from '../scripts/visualizations/cluster-figures.js';
+
+  const fig = k => document.querySelector(`[data-fig="${k}"]`);
+  figRowColumn(fig('rowcol'));
+  figClustering(fig('clustering'));
+  fig51(fig('f51'));
+  fig52(fig('f52'));
+  figSplit(fig('split'));
+
+  const get = f => fetch(`../data/${f}`).then(r => (r.ok ? r.json() : Promise.reject(new Error(`${f}: ${r.status}`))));
+  const ms = n => n.toLocaleString('vi-VN', { maximumFractionDigits: n < 1 ? 2 : 1 });
+  const num = n => n.toLocaleString('vi-VN', { maximumFractionDigits: 3 });
+  const flat = p => [p, ...(p.Plans ?? []).flatMap(flat)];
+
+  try {
+    const ids = ['filter-pk', 'filter-forced', 'filter-include', 'cluster-before', 'cluster-after', 'ios-noios', 'ios-sum', 'ios-date'];
+    const [counts, times, ...loaded] = await Promise.all([get('ch5/counts.json'), get('ch5/times.json'), ...ids.map(id => get(`ch5/${id}.json`))]);
+    const plans = Object.fromEntries(ids.map((id, i) => [id, loaded[i][0]]));
+    for (const el of document.querySelectorAll('[data-plan]')) el.innerHTML = planTable(plans[el.dataset.plan]);
+
+    figFilter(fig('filter'), { rows: counts.sub7, matches: counts.ina });
+    figIndexOnly(fig('ios'), { rows: counts.sales_sub20 });
+    figCorrelation(fig('corr'), { corrDate: num(counts.corr.sales_sale_date), corrSub: num(counts.corr.sales_subsidiary_id) });
+    fig('corr').setAttribute('aria-label', `sale_date có correlation ${num(counts.corr.sales_sale_date)}: các lần bán gần đây nằm ở cuối table. subsidiary_id có correlation ${num(counts.corr.sales_subsidiary_id)}: lần bán của một subsidiary rải khắp table.`);
+
+    const sum = (id, k) => flat(plans[id].Plan).reduce((t, n) => t + (n[k] ?? 0), 0);
+    const facts = {
+      'c:sub7': fmt(counts.sub7), 'c:ina': fmt(counts.ina), 'c:emp_blocks': fmt(counts.emp_blocks),
+      'c:sales': fmt(counts.sales), 'c:sales_sub20': fmt(counts.sales_sub20), 'c:sales_date20': fmt(counts.sales_date20),
+      'c:long_key': counts.long_key,
+      ...Object.fromEntries(Object.entries(counts.corr).map(([k, v]) => [`r:${k}`, num(v)])),
+      ...Object.fromEntries(Object.entries(times).map(([k, v]) => [`t:${k}`, ms(v)])),
+      ...Object.fromEntries(ids.flatMap(id => [
+        [`p:${id}:blocks`, fmt(blocks(plans[id].Plan))],
+        [`p:${id}:removed`, fmt(sum(id, 'Rows Removed by Filter'))],
+        [`p:${id}:heap`, fmt(sum(id, 'Heap Fetches'))],
+      ])),
+    };
+    for (const el of document.querySelectorAll('[data-fact]')) el.textContent = facts[el.dataset.fact] ?? el.textContent;
+
+    const bar = (label, k, id, hot) => ({ label, value: times[k], text: `${ms(times[k])} ms · ${fmt(blocks(plans[id].Plan))} block`, hot });
+    const draw = (k, items) => bars(document.querySelector(`[data-bars="${k}"]`), items);
+    draw('filter', [
+      bar('Chỉ index primary key', 'filter_pk', 'filter-pk', true),
+      bar('Ép dùng empsubupnam', 'filter_forced', 'filter-forced', true),
+      bar('Index có INCLUDE', 'filter_include', 'filter-include'),
+    ]);
+    draw('cluster', [
+      bar('Row theo thứ tự thêm vào', 'cluster_before', 'cluster-before', true),
+      bar('Sau CLUSTER', 'cluster_after', 'cluster-after'),
+    ]);
+    draw('ios', [
+      bar('Index (subsidiary_id)', 'ios_noios', 'ios-noios', true),
+      bar('Index-only scan', 'ios_sum', 'ios-sum'),
+      bar('Thêm điều kiện sale_date', 'ios_date', 'ios-date', true),
+    ]);
+  } catch (e) {
+    for (const el of document.querySelectorAll('[data-plan], [data-bars], [data-fig="filter"], [data-fig="ios"], [data-fig="corr"]')) {
+      el.replaceWith(Object.assign(document.createElement('p'), { textContent: `Không tải được số liệu (${e.message}). Chạy npm start rồi mở qua http://localhost:8000.` }));
+    }
+  }
+</script>
+</body>
+</html>

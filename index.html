@@ -18,7 +18,7 @@
 <nav class="bar" id="top" aria-label="Chính">
   <a class="mark" href="index.html"><span class="sq"></span>SQL Performance, trực quan</a>
   <ul>
-    <li><a href="lessons/ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="lessons/ch2-the-where-clause.html">Chương 2</a></li><li><a href="lessons/ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="lessons/ch4-the-join-operation.html">Chương 4</a></li>
+    <li><a href="lessons/ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="lessons/ch2-the-where-clause.html">Chương 2</a></li><li><a href="lessons/ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="lessons/ch4-the-join-operation.html">Chương 4</a></li><li><a href="lessons/ch5-clustering-data.html">Chương 5</a></li>
     <li class="opt"><a href="#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li>
   </ul>
 </nav>
@@ -43,7 +43,7 @@
   <section class="chapters reveal" id="chuong">
     <div class="chapters-head">
       <h2>Tám chương</h2>
-      <p>4 chương đã có</p>
+      <p>5 chương đã có</p>
     </div>
     <ul class="menu" data-stagger>
       <li>
@@ -70,7 +70,12 @@
         <p>Nested loops, hash join, sort-merge join và index nào giúp từng loại.</p>
         <p class="hl">Chọn ít column: bảng băm vừa bộ nhớ, hash join nhanh hơn.</p></div>
       </li>
-      <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Gom cụm dữ liệu</span><span>Sắp có</span></p><p>Index-only scan, clustering factor, thêm column vào index để khỏi đọc table.</p></div></li>
+      <li>
+        <img src="assets/ui/thumb-ch5.webp" alt="" width="128" height="128" loading="lazy">
+        <div><p class="row"><a href="lessons/ch5-clustering-data.html">Gom cụm dữ liệu</a><span>Đã có</span></p>
+        <p>Index filter predicate dùng có chủ ý, clustering factor, index-only scan và index-organized table.</p>
+        <p class="hl">Index-only scan: 43 block thay vì 5.105.</p></div>
+      </li>
       <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Sắp xếp và gom nhóm</span><span>Sắp có</span></p><p>ORDER BY và GROUP BY tận dụng thứ tự có sẵn trong index.</p></div></li>
       <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Kết quả từng phần</span><span>Sắp có</span></p><p>Top-N, paging bằng OFFSET và bằng seek.</p></div></li>
       <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Thay đổi dữ liệu</span><span>Sắp có</span></p><p>Cái giá của mỗi index khi INSERT, UPDATE và DELETE.</p></div></li>

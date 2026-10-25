@@ -2,17 +2,17 @@
 // join từng cặp table, pipelining, N+1, độ trễ, ba thuật toán join và kích thước bảng băm.
 import { figure } from '../sketch.js';
 
-const W = 680, ROW = 24;
+export const W = 680, ROW = 24;
 const fmt = n => n.toLocaleString('vi-VN');
 
 // Hộp có nhãn ở giữa.
-function box(p, x, y, w, h, label, o = {}) {
+export function box(p, x, y, w, h, label, o = {}) {
   p.rect(x, y, w, h, { tone: o.tone ?? 'index', fill: o.fill, solid: o.solid, width: o.width ?? 1.4, dash: o.dash, gap: 4 });
   if (label) p.text(x + w / 2, y + h / 2 + 5, label, { size: o.size ?? 15, anchor: 'middle', tone: o.text ?? o.tone ?? 'ink', weight: o.weight, mono: o.mono });
 }
 
 // Một cột ô (mỗi ô một row), style(i) → { fill, tone, strike }.
-function cells(p, x, y, w, labels, style = () => ({})) {
+export function cells(p, x, y, w, labels, style = () => ({})) {
   labels.forEach((t, i) => {
     const s = style(i), cy = y + i * ROW;
     p.rect(x, cy, w, ROW, { tone: s.tone ?? 'index', fill: s.fill, solid: s.solid, width: 1.2, simple: true, gap: 3 });
@@ -22,7 +22,7 @@ function cells(p, x, y, w, labels, style = () => ({})) {
 }
 
 // Tam giác nhỏ tượng trưng cho một B-tree.
-function tree(p, cx, top, size, label) {
+export function tree(p, cx, top, size, label) {
   const h = size, w = size * 1.1;
   p.line(cx, top, cx - w / 2, top + h, { tone: 'index', width: 1.3 });
   p.line(cx, top, cx + w / 2, top + h, { tone: 'index', width: 1.3 });

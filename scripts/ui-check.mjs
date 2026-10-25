@@ -6,7 +6,7 @@ import { mkdirSync } from 'node:fs';
 
 const BASE = process.env.BASE ?? 'http://localhost:8000/';
 const OUT = '.taste-skill/ui';
-const PAGES = ['index.html', 'lessons/ch1-anatomy-of-an-index.html', 'lessons/ch2-the-where-clause.html', 'lessons/ch3-performance-and-scalability.html', 'lessons/ch4-the-join-operation.html'];
+const PAGES = ['index.html', 'lessons/ch1-anatomy-of-an-index.html', 'lessons/ch2-the-where-clause.html', 'lessons/ch3-performance-and-scalability.html', 'lessons/ch4-the-join-operation.html', 'lessons/ch5-clustering-data.html'];
 const VIEWPORTS = {
   desktop: { width: 1440, height: 900 },
   laptop: { width: 1024, height: 768 },
