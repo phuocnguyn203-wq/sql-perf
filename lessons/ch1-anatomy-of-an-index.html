@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  <title>Chương 1 · Giải phẫu một index</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Patrick+Hand&family=IBM+Plex+Mono:wght@400;600&display=swap"> <!-- taste-skill-ignore: mono chỉ cho code SQL -->
+  <link rel="stylesheet" href="../styles/tokens.css">
+  <link rel="stylesheet" href="../styles/base.css">
+</head>
+<body class="read">
+<a class="skip" href="#noi-dung">Bỏ qua tới nội dung</a>
+<div class="progress" hidden aria-hidden="true"></div>
+<nav class="bar" id="top" aria-label="Chính">
+  <a class="mark" href="../index.html"><span class="sq"></span>SQL Performance, trực quan</a>
+  <ul><li><a href="ch1-anatomy-of-an-index.html" aria-current="page">Chương 1</a></li><li><a href="ch2-the-where-clause.html">Chương 2</a></li><li><a href="ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="ch4-the-join-operation.html">Chương 4</a></li><li class="opt"><a href="../index.html#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li></ul>
+</nav>
+<div class="page" id="noi-dung">
+
+  <header class="chapter-head wide reveal">
+    <div>
+    <h1>Giải phẫu một index</h1>
+    <p class="sub">"Index làm query nhanh" là lời giải thích cơ bản nhất về index. Nó đúng ở điểm quan trọng nhất, nhưng chưa đủ.<br>Chương này mô tả cấu trúc index vừa đủ sâu để hiểu các vấn đề hiệu năng SQL trong cả sách.</p>
+    </div>
+    <figure class="photo"><img src="../assets/drawers-nli.webp" alt="Tủ ngăn kéo đựng thẻ mục lục ở Thư viện Quốc gia Israel" width="1200" height="1600"><figcaption>Tủ thẻ mục lục: dữ liệu nằm ở chỗ khác, tủ chỉ giữ một bản sao có thứ tự để tìm cho nhanh.</figcaption></figure>
+  </header>
+
+  <noscript><p class="sub">Các hình cần JavaScript.</p></noscript>
+
+  <div class="step reveal">
+    <h3>Index là một cấu trúc dư thừa</h3>
+    <p>Bài này đi theo chương 1 của cuốn <i>SQL Performance Explained</i> (Markus Winand, 2012); chữ "sách" trong bài là cuốn đó. Sách dùng Oracle; mỗi ví dụ ở đây được chạy lại trên PostgreSQL, và chỗ nào PostgreSQL làm khác, bài ghi rõ.</p>
+    <p>Index là một cấu trúc riêng trong database, được tạo bằng lệnh <code>CREATE INDEX</code>. Nó cần chỗ lưu riêng trên đĩa và giữ một bản sao dữ liệu của table. Nghĩa là index hoàn toàn dư thừa. Tạo index không thay đổi dữ liệu của table; nó chỉ tạo thêm một cấu trúc dữ liệu trỏ tới table. Index của database rất giống mục lục cuối sách: chiếm chỗ riêng, lặp lại thông tin, và trỏ tới nội dung thật nằm ở chỗ khác.</p>
+    <aside class="box">
+      <b class="k">Clustered index</b>
+      SQL Server và MySQL (với InnoDB) hiểu "index" rộng hơn: table chỉ gồm cấu trúc index được gọi là clustered index. Oracle gọi chúng là Index-Organized Table (IOT). Chương 5, "Clustering Data", nói kỹ hơn về loại table này cùng ưu nhược điểm của nó.
+    </aside>
+    <p>Tìm trong index giống tìm trong một cuốn danh bạ điện thoại in. Ý chính là mọi entry được xếp theo một thứ tự xác định. Tìm trong dữ liệu đã xếp thứ tự thì nhanh và dễ, vì thứ tự cho biết vị trí của từng entry.</p>
+    <p>Nhưng index phức tạp hơn danh bạ in, vì nó thay đổi liên tục. Danh bạ in không thể cập nhật mỗi khi có thay đổi, đơn giản vì giữa các entry không còn chỗ để chèn entry mới; nó gom các thay đổi lại cho lần in sau. Database thì không chờ lâu như vậy được. Nó phải xử lý insert, delete và update ngay lập tức, giữ đúng thứ tự của index mà không phải dời một lượng lớn dữ liệu.</p>
+    <p>Database giải bài toán này bằng cách ghép hai cấu trúc dữ liệu: một <b>doubly linked list</b> và một <b>search tree</b>. Hai cấu trúc này giải thích phần lớn đặc điểm hiệu năng của database.</p>
+  </div>
+
+  <section id="leaf">
+    <div class="reveal">
+      <h2>The Index Leaf Nodes</h2>
+      <p class="sub">Index giữ dữ liệu theo thứ tự logic, tách khỏi vị trí thật trên đĩa, nhờ một doubly linked list nối các leaf node.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Thứ tự logic không phụ thuộc vị trí vật lý</h3>
+      <p>Mục đích chính của index là cung cấp một bản dữ liệu đã xếp thứ tự. Nhưng không thể lưu dữ liệu nối tiếp nhau theo thứ tự, vì một câu insert sẽ phải dời mọi entry phía sau để lấy chỗ cho entry mới. Dời nhiều dữ liệu rất tốn thời gian, nên insert sẽ rất chậm. Giải pháp là dựng một thứ tự logic, độc lập với thứ tự vật lý trong bộ nhớ.</p>
+      <p>Thứ tự logic được dựng bằng doubly linked list. Mỗi node có liên kết tới hai node bên cạnh, giống một sợi xích. Node mới được chèn vào giữa hai node có sẵn bằng cách sửa liên kết của chúng trỏ tới node mới. Node mới nằm ở đâu không quan trọng, vì doubly linked list giữ thứ tự logic.</p>
+      <p>Cấu trúc này gọi là <em>doubly</em> linked list vì mỗi node trỏ tới cả node đứng trước và node đứng sau. Nhờ vậy database đọc được index theo chiều xuôi hoặc chiều ngược tùy nhu cầu. Chèn entry mới không cần dời nhiều dữ liệu, chỉ cần đổi vài con trỏ. Nhiều ngôn ngữ lập trình cũng dùng doubly linked list cho collection:</p>
+      <figure>
+        <table class="sk-table">
+          <thead><tr><th>Ngôn ngữ lập trình</th><th>Tên</th></tr></thead>
+          <tbody>
+            <tr><td>Java</td><td><code>java.util.LinkedList</code></td></tr>
+            <tr><td>.NET Framework</td><td><code>System.Collections.Generic.LinkedList</code></td></tr>
+            <tr><td>C++</td><td><code>std::list</code></td></tr>
+          </tbody>
+        </table>
+      </figure>
+      <p>Database dùng doubly linked list để nối các <b>leaf node</b> của index. Mỗi leaf node được lưu trong một <b>block</b> (còn gọi là page) của database: đơn vị lưu trữ nhỏ nhất. Mọi block của index cùng kích thước, thường vài kilobyte; ở PostgreSQL là 8 KB. Database dùng hết chỗ trong mỗi block để lưu càng nhiều entry càng tốt. Vậy thứ tự của index được giữ ở hai mức: các entry bên trong mỗi leaf node, và các leaf node với nhau qua doubly linked list.</p>
+      <figure class="fig wide" id="fig-leaf">
+        <div class="fig-head">
+          <span class="fig-num">Hình 1.1</span>
+          <h4>Index leaf node và dữ liệu table tương ứng</h4>
+          <span class="tag">Hình trong sách</span>
+        </div>
+        <div class="scroll-x" data-ui><svg role="img" aria-label="Ba leaf node đã sắp xếp, nối với nhau hai chiều, với con trỏ ROWID tới các row không sắp xếp trong table" style="min-width:440px"></svg></div>
+        <figcaption>Leaf node xếp theo thứ tự, nối với nhau hai chiều. Table không có thứ tự nào.</figcaption>
+      </figure>
+      <p>Hình 1.1 cho thấy các leaf node và liên kết của chúng tới dữ liệu table. Mỗi entry của index gồm các column được index (key, ở đây là column 2) và trỏ tới row tương ứng trong table qua <b>ROWID</b> (hay RID). PostgreSQL gọi địa chỉ này là <code>ctid</code>: số block và vị trí của row trong block. Khác với index, dữ liệu table được lưu theo cấu trúc <b>heap</b> và hoàn toàn không được sắp xếp. Các row trong cùng một table block không liên quan gì tới nhau, và giữa các block cũng không có liên kết nào.</p>
+    </div>
+  </section>
+
+  <section id="btree">
+    <div class="lead reveal">
+      <div>
+        <h2>The Search Tree (B-Tree)</h2>
+        <p class="sub">Leaf node nằm lộn xộn trên đĩa, nên database cần cấu trúc thứ hai để nhảy thẳng tới đúng leaf node: một balanced search tree.</p>
+      </div>
+      <figure class="photo"><img src="../assets/schlagwortkatalog.webp" alt="Tủ thẻ mục lục theo chủ đề ở thư viện Đại học Graz, một ngăn đang mở" width="1600" height="1353"><figcaption>Mỗi ngăn ghi khoá đầu và khoá cuối, như “BAY – BEE”: đọc nhãn là biết ngăn nào cần mở.</figcaption></figure>
+    </div>
+
+    <div class="step reveal">
+      <h3>Danh bạ bị xáo trang</h3>
+      <p>Các leaf node được lưu theo thứ tự tùy ý: vị trí trên đĩa không khớp với vị trí logic theo thứ tự của index. Giống một cuốn danh bạ bị xáo trang: tìm "Smith" mà mở ra trang "Robinson" thì chẳng có gì bảo đảm trang "Smith" nằm ngay sau. Database cần một cấu trúc thứ hai để tìm nhanh entry giữa các trang bị xáo: một balanced search tree, gọi tắt là <b>B-tree</b>.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Tree được dựng từ key lớn nhất của mỗi node</h3>
+      <p>Hình dưới là index ví dụ của sách, 30 entry. Doubly linked list giữ thứ tự logic giữa các leaf node. Root node và branch node giúp tìm nhanh giữa các leaf node.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 1.2</span><h4>Cấu trúc B-tree</h4><span class="tag">Hình trong sách</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="12" role="img" aria-label="B-tree ba tầng: root node 39, 83, 98; ba branch node; mười leaf node, mỗi leaf ba entry kèm ROWID, nối với nhau hai chiều." style="min-width:340px; max-width:420px"></svg></div>
+        <figcaption>Mỗi entry của branch node là key lớn nhất của node con nó trỏ tới (ô tô nền).</figcaption>
+      </figure>
+      <p>Mỗi entry của branch node ứng với giá trị lớn nhất trong leaf node mà nó trỏ tới. Lấy branch node ở giữa làm ví dụ: leaf node đầu tiên nó trỏ tới có giá trị lớn nhất là 46, nên entry đầu của branch node đó cũng là 46. Các leaf node khác cũng vậy, nên cuối cùng branch node có các giá trị 46, 53, 57 và 83. Theo cách này, một tầng branch được dựng cho tới khi mọi leaf node đều có branch node trỏ tới. Tầng tiếp theo được dựng tương tự, trên tầng branch đầu tiên. Cứ lặp lại cho tới khi mọi key vừa trong một node duy nhất: <b>root node</b>.</p>
+      <p>Cấu trúc này là một <em>balanced</em> search tree vì độ sâu của tree như nhau ở mọi vị trí: khoảng cách từ root node tới leaf node nào cũng bằng nhau.</p>
+      <aside class="box">
+        <b class="k">Lưu ý</b>
+        B-tree là balanced tree, không phải binary tree.
+      </aside>
+      <p>Tạo xong, database tự bảo trì index. Nó áp mọi insert, delete và update vào index và giữ tree cân bằng, nên các thao tác ghi tốn thêm công bảo trì. Chương 8, "Modifying Data", nói kỹ hơn.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Tree traversal: tìm key 57</h3>
+      <p>Tree traversal tìm key "57" như sau. Nó bắt đầu ở root node. Các entry được xét theo thứ tự tăng dần cho tới khi gặp giá trị lớn hơn hoặc bằng (<code>&gt;=</code>) giá trị cần tìm (57). Ở đây đó là entry 83. Database đi theo liên kết tới branch node tương ứng và lặp lại cho tới khi tới một leaf node.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 1.3</span><h4>Tree traversal</h4><span class="tag">Hình trong sách</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="13" role="img" aria-label="Tìm key 57: root chọn entry 83, branch chọn entry 57, tới leaf có hai entry 57, rồi đọc thêm leaf kế bên để chắc không còn entry 57." style="min-width:340px; max-width:420px"></svg></div>
+        <figcaption>Tìm 57: root chọn 83, branch chọn 57, leaf có hai entry khớp. Entry cuối của leaf là 57, nên database phải đọc thêm leaf kế bên.</figcaption>
+      </figure>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        B-tree giúp database tìm ra một leaf node rất nhanh.
+      </aside>
+      <p>Tree traversal hiệu quả tới mức tác giả gọi nó là sức mạnh thứ nhất của indexing. Nó gần như tức thì, kể cả trên tập dữ liệu khổng lồ. Lý do chính là tree cân bằng, nên mọi phần tử đều tới được với cùng số bước; lý do thứ hai là độ sâu của tree tăng theo logarit, tức tăng rất chậm so với số leaf node. Index thật với hàng triệu record có độ sâu bốn hoặc năm; độ sâu sáu hầu như không gặp. Khung "Logarithmic Scalability" dưới đây nói kỹ hơn.</p>
+    </div>
+
+    <div class="step reveal" id="log">
+      <h3>Logarithmic Scalability: thêm một tầng, sức chứa nhân lên nhiều lần</h3>
+      <p>Trong toán học, logarit của một số theo một cơ số là số mũ mà cơ số phải được nâng lên để ra số đó. Trong search tree, cơ số ứng với số entry mỗi branch node, và số mũ là độ sâu của tree. Index ví dụ ở Hình 1.2 chứa tối đa bốn entry mỗi node và sâu ba tầng, nên chứa được tối đa 64 (4<sup>3</sup>) entry. Thêm một tầng là chứa được 256 entry (4<sup>4</sup>). Mỗi lần thêm một tầng, số entry tối đa nhân bốn. Logarit đảo ngược phép tính này: độ sâu của tree là log<sub>4</sub>(số entry của index).</p>
+      <p>Nhờ tăng theo logarit, index ví dụ tìm được trong một triệu record chỉ với mười tầng. Index thật còn hiệu quả hơn. Yếu tố chính quyết định độ sâu, và vì thế quyết định tốc độ tra cứu, là số entry trong mỗi node: về mặt toán học đó là cơ số của logarit. Cơ số càng lớn, tree càng nông, traversal càng nhanh.</p>
+      <figure>
+        <table class="sk-table">
+          <thead><tr><th>Độ sâu tree</th><th>Số entry tối đa</th></tr></thead>
+          <tbody><tr><td>3</td><td>64</td></tr><tr><td>4</td><td>256</td></tr><tr><td>5</td><td>1.024</td></tr><tr><td>6</td><td>4.096</td></tr><tr><td>7</td><td>16.384</td></tr><tr><td>8</td><td>65.536</td></tr><tr><td>9</td><td>262.144</td></tr><tr><td>10</td><td>1.048.576</td></tr></tbody>
+        </table>
+        <figcaption>Bảng trong sách: tree với 4 entry mỗi node. Mỗi tầng thêm vào nhân sức chứa lên bốn.</figcaption>
+      </figure>
+      <p>Database tận dụng tối đa điều này và nhồi càng nhiều entry vào mỗi node càng tốt, thường là hàng trăm. Nghĩa là mỗi tầng mới của index chứa thêm được gấp trăm lần. Ví dụ trên PostgreSQL: index trên <code>last_name</code> của table <code>employees</code> (dùng ở chương 2) có <span data-fact="rows">100.000</span> entry trong <span data-fact="leaves">312</span> leaf node, khoảng <span data-fact="perLeaf">321</span> entry mỗi leaf node, và cao <span data-fact="levels">3</span> tầng tính cả leaf node.</p>
+    </div>
+  </section>
+
+  <section id="slow">
+    <div class="reveal">
+      <h2>Slow Indexes, Part I</h2>
+      <p class="sub">Tree traversal rất nhanh, vậy mà có lúc tra index vẫn chậm. Nguyên nhân không nằm ở tree, mà ở hai bước sau nó.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Hai nguyên liệu của một lần tra index chậm</h3>
+      <p>Dù tree traversal rất hiệu quả, vẫn có trường hợp tra index không nhanh như mong đợi. Mâu thuẫn này nuôi lời đồn về "index bị thoái hóa" suốt một thời gian dài, với phương thuốc thần kỳ là rebuild index. Lý do thật khiến các câu lệnh đơn giản vẫn chậm, kể cả khi dùng index, giải thích được bằng các mục trước.</p>
+      <p><b>Nguyên liệu thứ nhất là leaf node chain.</b> Xem lại lần tìm "57" ở Hình 1.3: có hai entry khớp trong index. Nói chính xác hơn, có ít nhất hai entry: leaf node kế tiếp có thể còn entry "57" nữa. Database phải đọc leaf node kế tiếp để biết còn entry khớp hay không. Nghĩa là một lần tra index không chỉ làm tree traversal, mà còn phải đi theo leaf node chain.</p>
+      <p><b>Nguyên liệu thứ hai là truy cập table.</b> Chỉ một leaf node cũng có thể chứa rất nhiều entry khớp, thường là hàng trăm. Dữ liệu table tương ứng thường nằm rải trên nhiều table block (xem Hình 1.1). Nghĩa là mỗi entry khớp lại cần thêm một lần truy cập table.</p>
+      <p>Một lần tra index cần ba bước:</p>
+      <ol class="steps">
+        <li><b>Tree traversal.</b></li>
+        <li><b>Đi theo leaf node chain.</b></li>
+        <li><b>Lấy dữ liệu từ table.</b></li>
+      </ol>
+      <p>Tree traversal là bước duy nhất có giới hạn trên cho số block phải đọc: độ sâu của index. Hai bước còn lại có thể phải đọc rất nhiều block; chúng làm lần tra index chậm.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Database cho biết nó dùng index thế nào</h3>
+      <p>Lời đồn "index chậm" bắt nguồn từ niềm tin sai rằng tra index chỉ là duyệt tree, nên index chậm hẳn là do tree "hỏng" hoặc "mất cân bằng". Sự thật là có thể hỏi phần lớn database xem nó dùng index ra sao. Oracle mô tả khá chi tiết, với ba thao tác cho một lần tra index cơ bản:</p>
+      <dl class="ops">
+        <dt><code>INDEX UNIQUE SCAN</code></dt>
+        <dd>Chỉ làm tree traversal. Oracle dùng thao tác này khi một unique constraint bảo đảm điều kiện tìm khớp không quá một entry.</dd>
+        <dt><code>INDEX RANGE SCAN</code></dt>
+        <dd>Làm tree traversal rồi đi theo leaf node chain để tìm mọi entry khớp. Đây là thao tác dự phòng khi có thể có nhiều entry khớp.</dd>
+        <dt><code>TABLE ACCESS BY INDEX ROWID</code></dt>
+        <dd>Lấy row từ table. Thao tác này (thường) chạy một lần cho mỗi record khớp từ bước scan index trước đó.</dd>
+      </dl>
+      <p>PostgreSQL gộp cả ba thao tác vào một node tên <code>Index Scan</code>; <a href="ch2-the-where-clause.html">chương 2</a> đối chiếu chi tiết khi bắt đầu đọc execution plan.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Một INDEX RANGE SCAN có thể đọc một phần lớn index. Nếu mỗi row lại cần thêm một lần truy cập table, query có thể chậm dù đang dùng index.
+      </aside>
+    </div>
+  </section>
+</div>
+
+<footer class="foot reveal">
+  <div class="foot-mark" role="img" aria-label="INDEX"><span>I</span><span>N</span><span>D</span><span>E</span><span>X</span></div>
+  <div class="foot-cols">
+    <div><h3>Chương</h3><ul><li><a href="ch1-anatomy-of-an-index.html">Giải phẫu một index</a></li><li><a href="ch2-the-where-clause.html">Mệnh đề WHERE</a></li><li><a href="ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a></li><li><a href="ch4-the-join-operation.html">Phép JOIN</a></li></ul></div>
+    <div><h3>Thí nghiệm</h3><ul><li><a href="../sql/seed.sql">seed.sql</a></li><li><a href="../sql/benchmarks.sql">benchmarks.sql</a></li><li><a href="../sql/ch2-benchmarks.sql">ch2-benchmarks.sql</a></li><li><a href="../sql/blocks.sql">blocks.sql</a></li></ul></div>
+    <div><h3>Nguồn</h3><ul><li><a href="https://sql-performance-explained.com/">SQL Performance Explained</a></li><li><a href="https://use-the-index-luke.com/">Use The Index, Luke</a></li></ul></div>
+    <div><p>Mọi số đo chạy trên PostgreSQL thật, table employees 100.000 row với seed cố định. Chạy lại các file SQL sẽ ra cùng dữ liệu.</p><p class="credits">Ảnh: <a href="https://commons.wikimedia.org/wiki/File:Drawers_NLI.jpg">“Drawers NLI”</a>, יעל י, <a href="https://creativecommons.org/licenses/by-sa/3.0">CC BY-SA 3.0</a>; <a href="https://commons.wikimedia.org/wiki/File:Schlagwortkatalog.jpg">“Schlagwortkatalog”</a>, Dr. Marcus Gossler, <a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a>. Qua Wikimedia Commons.</p></div>
+  </div>
+  <div class="foot-last"><span>Nội dung tóm tắt từ sách của Markus Winand.</span><a class="top" href="#top">Lên đầu trang</a></div>
+</footer>
+
+<script src="../vendor/framer-motion-dom.js"></script>
+<script src="../vendor/rough.js"></script>
+<script type="module">import { site } from '../scripts/motion.js'; site();</script>
+<script type="module">
+  import { leafFigure } from '../scripts/visualizations/leaf-nodes.js';
+  import { btreeFigure } from '../scripts/visualizations/btree.js';
+  import { fmt } from '../scripts/visualizations/plans.js';
+
+  leafFigure(document.getElementById('fig-leaf'));
+  btreeFigure(document.querySelector('[data-fig="12"]'));
+  btreeFigure(document.querySelector('[data-fig="13"]'), 57);
+
+  const get = async f => {
+    const r = await fetch(`../data/${f}`);
+    if (!r.ok) throw new Error(`${f}: ${r.status}`);
+    return r.json();
+  };
+
+  try {
+    const [stats, blockData] = await Promise.all([get('index-stats.json'), get('blocks.json')]);
+    const facts = {
+      rows: fmt(blockData.rows),
+      leaves: fmt(stats.leaf_pages), perLeaf: Math.round(blockData.rows / stats.leaf_pages), levels: stats.tree_level + 1,
+    };
+    document.querySelectorAll('[data-fact]').forEach(el => { el.textContent = facts[el.dataset.fact] ?? el.textContent; });
+  } catch {}
+</script>
+</body>
+</html>

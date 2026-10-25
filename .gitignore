@@ -1,0 +1,8 @@
+node_modules/
+.taste-skill/
+# PDF của sách (có bản quyền): chỉ dùng cục bộ, không đưa lên repo.
+chapters/
+# Kho skill của các công cụ AI, không thuộc site.
+.agents/
+.aider-desk/
+skills-lock.json

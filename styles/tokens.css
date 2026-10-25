@@ -1,0 +1,108 @@
+/* Art direction: one motif. Ô vuông của một block 8 KB là hình duy nhất của cả site;
+   hình minh họa vẽ tay (rough.js). Hai nền: sáng (mực xanh navy) và tối (xanh đêm).
+   Màu cam là màu nhấn duy nhất: "block đang được đọc", "row khớp", nút chính. */
+:root {
+  --paper: #f7f6f2;
+  --paper-2: #ecebe5;
+  --paper-3: #dde1ea;
+  --ink: #15254a;          /* xanh navy: chữ và nét vẽ */
+  --ink-2: #4b5674;
+  --rule: #c3c9d6;
+  --fill: #d6dbe6;
+  --accent: #c9431a;
+  --accent-ink: #ffffff;   /* chữ trên nền màu nhấn: 4,9:1 */
+  --accent-wash: #f8d9cb;
+  --accent-text: #b2380c;  /* chữ nhỏ màu nhấn: 5,6:1 trên nền giấy */
+  --link: #2347b5;
+  --code-bg: var(--ink);    /* khối SQL */
+  --code-fg: var(--paper);
+
+  /* Màu riêng của hình vẽ tay */
+  --sk-ink: var(--ink);
+  --sk-muted: var(--ink-2);
+  --sk-faint: var(--rule);
+  --sk-index: #3563e9;     /* index: xanh hoàng gia, tách khỏi màu mực navy */
+  --sk-index-wash: #dbe4fb;
+  --sk-match: var(--accent);
+  --sk-match-text: var(--accent-text);
+  --sk-match-wash: var(--accent-wash);
+
+  --font-text: "Be Vietnam Pro", system-ui, "Segoe UI", sans-serif;
+  --font-read: "Literata", Georgia, "Times New Roman", serif;
+  --font-hand: "Patrick Hand", "Comic Sans MS", cursive;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace; /* taste-skill-ignore: chỉ cho code */
+
+  /* Sáu cỡ chữ: display, h2, h3, lede, body, small */
+  --t-display: clamp(52px, 6.2vw, 104px);
+  --t-h2: clamp(36px, 4.2vw, 61px);
+  --t-h3: clamp(24px, 2.2vw, 32px);
+  --t-lede: 21px;
+  --t-body: 17px;
+  --t-small: 14px;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 16px;
+  --s4: 24px;
+  --s5: 40px;
+  --s6: 72px;
+  --s7: 160px;
+
+  --margin: clamp(16px, 4vw, 56px);
+  --measure: 62ch;
+  --wide: 1320px;
+  --line: 1px solid var(--rule);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease: var(--ease-out);
+  --dur: 200ms;
+
+  color-scheme: light;
+}
+
+/* Nền tối: theo hệ điều hành, trừ khi người đọc đã chọn nền sáng; hoặc khi chọn nền tối. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0d1424;
+    --paper-2: #151e33;
+    --paper-3: #1f2a44;
+    --ink: #c9d1e0;
+    --ink-2: #949db3;
+    --rule: #2e3a56;
+    --fill: #253250;
+    --accent: #ff6a3d;
+    --accent-ink: #0d1424;
+    --accent-wash: #4a2214;
+    --accent-text: #ff7d55;
+    --link: #8ea6e8;
+  --code-bg: #18223a;
+  --code-fg: #c9d1e0;
+    --sk-index: #7d9cf0;
+    --sk-index-wash: #1e2c52;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0d1424;
+  --paper-2: #151e33;
+  --paper-3: #1f2a44;
+  --ink: #c9d1e0;
+  --ink-2: #949db3;
+  --rule: #2e3a56;
+  --fill: #253250;
+  --accent: #ff6a3d;
+  --accent-ink: #0d1424;
+  --accent-wash: #4a2214;
+  --accent-text: #ff7d55;
+  --link: #8ea6e8;
+  --code-bg: #18223a;
+  --code-fg: #c9d1e0;
+  --sk-index: #7d9cf0;
+  --sk-index-wash: #1e2c52;
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur: 0ms; }
+}

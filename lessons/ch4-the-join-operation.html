@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  <title>Chương 4 · Phép JOIN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Patrick+Hand&family=IBM+Plex+Mono:wght@400;600&display=swap"> <!-- taste-skill-ignore: mono chỉ cho code SQL -->
+  <link rel="stylesheet" href="../styles/tokens.css">
+  <link rel="stylesheet" href="../styles/base.css">
+</head>
+<body class="read">
+<a class="skip" href="#noi-dung">Bỏ qua tới nội dung</a>
+<div class="progress" hidden aria-hidden="true"></div>
+<nav class="bar" id="top" aria-label="Chính">
+  <a class="mark" href="../index.html"><span class="sq"></span>SQL Performance, trực quan</a>
+  <ul><li><a href="ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="ch2-the-where-clause.html">Chương 2</a></li><li><a href="ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="ch4-the-join-operation.html" aria-current="page">Chương 4</a></li><li class="opt"><a href="../index.html#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li></ul>
+</nav>
+<div class="page" id="noi-dung">
+
+  <header class="chapter-head wide reveal">
+    <div>
+    <h1>Phép JOIN</h1>
+    <p class="sub">Join ghép lại những mảnh dữ liệu nằm rải rác, nên rất nhạy với độ trễ.<br>Index đúng vẫn là cách tốt nhất để join nhanh, nhưng index nào là đúng thì tùy thuật toán join.</p>
+    </div>
+  </header>
+
+  <noscript><p class="sub">Các hình và plan cần JavaScript.</p></noscript>
+
+  <div class="step reveal">
+    <h3>Join ghép từng cặp table</h3>
+    <p>Bài này đi theo chương 4 của cuốn <i>SQL Performance Explained</i> (Markus Winand, 2012); chữ "sách" trong bài là cuốn đó. Sách dùng Oracle; mỗi ví dụ ở đây được chạy lại trên PostgreSQL, và chỗ nào PostgreSQL làm khác, bài ghi rõ.</p>
+    <p>Phép join biến dữ liệu từ mô hình chuẩn hóa (normalized) sang dạng phi chuẩn hóa (denormalized), hợp với một mục đích xử lý cụ thể. Join đặc biệt nhạy với độ trễ khi seek đĩa, vì nó ghép những mảnh dữ liệu nằm rải rác. Index đúng lại là cách tốt nhất để giảm thời gian phản hồi. Nhưng index nào đúng thì phụ thuộc vào việc query dùng thuật toán nào trong ba thuật toán join phổ biến.</p>
+    <p>Có một điểm chung cho mọi thuật toán join: chúng chỉ xử lý hai table một lúc. Query SQL có nhiều table hơn phải chạy nhiều bước: trước hết join hai table thành một kết quả trung gian, rồi join kết quả đó với table tiếp theo, và cứ thế.</p>
+    <figure class="fig wide">
+      <div class="fig-head"><h4>Ba table, hai bước join</h4><span class="tag">Minh họa</span></div>
+      <div class="scroll-x" data-ui><svg class="sk" data-fig="pairs" role="img" aria-label="Table A và Table B vào join 1, ra kết quả trung gian; kết quả trung gian và Table C vào join 2, ra kết quả cuối." style="min-width:520px"></svg></div>
+      <figcaption>Thuật toán join nào cũng chỉ nhận hai đầu vào. Table thứ ba phải chờ kết quả của bước trước.</figcaption>
+    </figure>
+    <p>Thứ tự join không ảnh hưởng tới kết quả cuối, nhưng ảnh hưởng tới hiệu năng. Vì vậy optimizer xét mọi hoán vị thứ tự join và chọn cái tốt nhất. Nghĩa là riêng việc tối ưu một câu lệnh phức tạp cũng có thể thành vấn đề hiệu năng. Càng nhiều table, càng nhiều phương án plan phải xét: nói theo toán học là <i>n</i>! (tăng theo giai thừa). Điều này không thành vấn đề khi dùng bind parameter, vì plan đã dựng được tái dùng.</p>
+    <figure class="fig wide">
+      <div class="fig-head"><h4>Số thứ tự join có thể có</h4><span class="tag">Mô hình tính toán</span></div>
+      <div data-bars="fact"></div>
+      <figcaption>n table có n! thứ tự join. Thêm một table là nhân số phương án lên n lần.</figcaption>
+    </figure>
+    <aside class="box important">
+      <b class="k">Quan trọng</b>
+      Câu lệnh càng phức tạp, dùng bind parameter càng quan trọng. Không dùng bind parameter giống như compile lại chương trình mỗi lần chạy.
+    </aside>
+    <aside class="box">
+      <b class="k">Pipelining kết quả trung gian</b>
+      Kết quả trung gian giải thích thuật toán rất rõ, nhưng không có nghĩa database phải lưu nó lại (materialize), tức lưu cả kết quả của join thứ nhất rồi mới bắt đầu join tiếp theo. Database dùng pipelining để tiết kiệm bộ nhớ: mỗi row của kết quả trung gian được chuyển ngay sang phép join tiếp theo, không cần lưu cả tập kết quả.
+    </aside>
+    <figure class="fig wide">
+      <div class="fig-head"><h4>Lưu lại hay chuyển tiếp ngay</h4><span class="tag">Minh họa</span></div>
+      <div class="scroll-x" data-ui><svg class="sk" data-fig="pipeline" role="img" aria-label="Trên: join 1 ghi cả kết quả trung gian vào một vùng lưu rồi join 2 mới đọc. Dưới: các row đi thẳng từ join 1 sang join 2." style="min-width:520px"></svg></div>
+      <figcaption>Với pipelining, join 2 bắt đầu ngay khi join 1 vừa ra row đầu tiên, và không cần chỗ chứa cả kết quả trung gian.</figcaption>
+    </figure>
+    <nav class="toc" aria-label="Các mục của chương">
+      <ol>
+        <li><a href="#nested">Nested Loops</a></li>
+        <li><a href="#hash">Hash Join</a></li>
+        <li><a href="#merge">Sort Merge</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <!-- ===================== Nested Loops ===================== -->
+  <section id="nested">
+    <div class="reveal">
+      <h2>Nested Loops</h2>
+      <p class="sub">Thuật toán join cơ bản nhất: với mỗi row của query bên ngoài, chạy một query bên trong. Nhanh khi query bên ngoài trả về ít row.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>N+1 selects: nested loops tự viết trong ứng dụng</h3>
+      <p>Nested loops join hoạt động như hai query lồng nhau: query bên ngoài (outer, hay driving query) lấy kết quả từ một table, và với mỗi row của nó, một query thứ hai lấy dữ liệu tương ứng từ table kia.</p>
+      <p>Có thể tự cài thuật toán nested loops bằng "nested select". Nhưng làm vậy rất phiền, vì độ trễ mạng cộng thêm vào độ trễ đĩa, làm thời gian phản hồi còn tệ hơn. "Nested select" vẫn rất phổ biến, vì rất dễ viết ra mà không hề hay biết. Các công cụ ORM (object-relational mapping) đặc biệt "giúp" chuyện này, tới mức cái gọi là <b>N+1 selects problem</b> đã nổi tiếng một cách đáng buồn.</p>
+      <p>Ví dụ của chương này dùng table <code>employees</code> quen thuộc từ chương 2 (<span data-fact="c:employees">100.000</span> nhân viên, primary key <code>(employee_id, subsidiary_id)</code>) và thêm một table mới, <code>sales</code>: mỗi row là một lần bán hàng, ghi nhân viên nào bán, ngày nào, bao nhiêu tiền.</p>
+      <pre class="sql"><code>CREATE TABLE sales (
+  sale_id       integer       PRIMARY KEY,
+  employee_id   integer       NOT NULL,
+  subsidiary_id integer       NOT NULL,
+  sale_date     date          NOT NULL,
+  eur_value     numeric(17,2) NOT NULL
+);</code></pre>
+      <p>Cặp <code>(subsidiary_id, employee_id)</code> trong <code>sales</code> trỏ tới nhân viên đã bán, tức primary key của <code>employees</code>. Table ở đây có <span data-fact="c:sales">1.000.000</span> lần bán, chia ngẫu nhiên cho các nhân viên.</p>
+      <p>Ví dụ của sách: tìm các nhân viên có họ bắt đầu bằng <code>'WIN'</code> và lấy mọi lần bán hàng của họ. ORM không sinh ra câu SQL join. Nó chạy một query lấy nhân viên, rồi với mỗi nhân viên tìm được, chạy một query lấy các lần bán của người đó. Bỏ bớt danh sách column, các câu SQL nó gửi tới database là:</p>
+      <pre class="sql"><code>-- 1 lần: tìm nhân viên
+SELECT … FROM employees WHERE UPPER(last_name) LIKE 'WIN%';
+
+-- N lần, mỗi nhân viên tìm được một lần: lấy sales của người đó
+SELECT … FROM sales WHERE subsidiary_id = ? AND employee_id = ?;</code></pre>
+      <p>Nếu câu thứ nhất (driving query) trả về N row, tổng cộng có N+1 câu select. Trên dữ liệu ở đây có <span data-fact="c:win">8</span> nhân viên như vậy:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Bao nhiêu lần ứng dụng hỏi database</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="trips" role="img" aria-label="N+1 selects: một query lấy 8 nhân viên rồi 8 query lấy sales, tổng 9 lần đi về. Một câu JOIN: một lần đi về." style="min-width:520px"></svg></div>
+        <figcaption>Cùng một dữ liệu: N+1 selects cần <span data-fact="c:trips">9</span> lần đi về giữa ứng dụng và database, câu JOIN cần một.</figcaption>
+      </figure>
+      <details class="plan-more">
+        <summary>Code ORM sinh ra N+1 select (Java, Perl, PHP, theo sách)</summary>
+        <p><b>Java</b>, JPA với <code>CriteriaBuilder</code>:</p>
+        <pre class="sql"><code>CriteriaBuilder queryBuilder = em.getCriteriaBuilder();
+CriteriaQuery&lt;Employees&gt;
+   query = queryBuilder.createQuery(Employees.class);
+Root&lt;Employees&gt; r = query.from(Employees.class);
+query.where(
+  queryBuilder.like(
+    queryBuilder.upper(r.get(Employees_.lastName)),
+    "WIN%"
+  )
+);
+List&lt;Employees&gt; emp = em.createQuery(query).getResultList();
+for (Employees e: emp) {
+  // process Employee
+  for (Sales s: e.getSales()) {
+    // process sale for Employee
+  }
+}</code></pre>
+        <p>Hibernate JPA 3.6.0 sinh ra N+1 query:</p>
+        <pre class="sql"><code>select employees0_.subsidiary_id as subsidiary1_0_
+       -- MORE COLUMNS
+  from employees employees0_
+ where upper(employees0_.last_name) like ?
+  select sales0_.subsidiary_id as subsidiary4_0_1_
+         -- MORE COLUMNS
+    from sales sales0_
+   where sales0_.subsidiary_id=?
+     and sales0_.employee_id=?
+  select sales0_.subsidiary_id as subsidiary4_0_1_
+         -- MORE COLUMNS
+    from sales sales0_
+   where sales0_.subsidiary_id=?
+     and sales0_.employee_id=?</code></pre>
+        <p><b>Perl</b>, DBIx::Class:</p>
+        <pre class="sql"><code>my @employees =
+   $schema-&gt;resultset('Employees')
+          -&gt;search({'UPPER(last_name)' =&gt; {-like=&gt;'WIN%'}});
+foreach my $employee (@employees) {
+    process Employee
+   foreach my $sale ($employee-&gt;sales) {
+       process Sale for Employee
+   }
+}</code></pre>
+        <p><b>PHP</b>, Doctrine query builder:</p>
+        <pre class="sql"><code>$qb = $em-&gt;createQueryBuilder();
+$qb-&gt;select('e')
+   -&gt;from('Employees', 'e')
+   -&gt;where("upper(e.last_name) like :last_name")
+   -&gt;setParameter('last_name', 'WIN%');
+$r = $qb-&gt;getQuery()-&gt;getResult();
+foreach ($r as $row) {
+   // process Employee
+   foreach ($row-&gt;getSales() as $sale) {
+      // process Sale for Employee
+   }
+}</code></pre>
+        <p>DBIx::Class 0.08192 và Doctrine 2.0.5 sinh ra cùng một kiểu N+1 query như Hibernate.</p>
+      </details>
+      <aside class="box">
+        <b class="k">Bật SQL logging</b>
+        Trong lúc phát triển, bật SQL logging và đọc lại các câu SQL được sinh ra. DBIx::Class: <code>export DBIC_TRACE=1</code>. Hibernate: <code>&lt;property name="show_sql"&gt;true&lt;/property&gt;</code>. Với JPA thì tùy provider, ví dụ <code>hibernate.show_sql</code>, <code>eclipselink.logging.level</code>, <code>openjpa.Log</code>. Doctrine chỉ bật được trong code (<code>EchoSqlLogger</code>); nhớ tắt khi lên production. Phần lớn ORM cho bật logging bằng code, nhưng như vậy dễ lỡ tay để nguyên thiết lập đó trên production.
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Database làm y như ORM, nhưng trong một lần đi về</h3>
+      <p>Dù "nested select" là anti-pattern, nó giải thích nested loops join rất rõ: database chạy join đúng như các ORM ở trên. Nó chạy query bên ngoài để lấy nhân viên, rồi với mỗi nhân viên tìm các lần bán của người đó. Vậy câu hỏi "join này cần index nào" quy về câu hỏi "hai câu select của ORM cần index nào". Xét lần lượt hai câu SQL ở trên.</p>
+      <p><b>Câu thứ nhất</b> tìm nhân viên theo họ:</p>
+      <pre class="sql"><code>SELECT … FROM employees WHERE UPPER(last_name) LIKE 'WIN%';</code></pre>
+      <p>Lúc này <code>employees</code> chỉ có index của primary key <code>(employee_id, subsidiary_id)</code>. Index đó không giúp tìm theo tên, nên database phải scan cả <span data-fact="c:employees">100.000</span> row. Index trên <code>last_name</code> cũng không giúp, vì điều kiện không tìm theo <code>last_name</code> mà theo <code>UPPER(last_name)</code> (chương 2, mục Functions). Cần một function-based index trên đúng biểu thức đó:</p>
+      <pre class="sql"><code>CREATE INDEX emp_up_name ON employees (UPPER(last_name));</code></pre>
+      <p>Trên PostgreSQL ở đây, index này phải tạo kèm <code>text_pattern_ops</code>, vì với collation của database này LIKE chỉ dùng được index như vậy (chương 2, mục LIKE).</p>
+      <p><b>Câu thứ hai</b> chạy một lần cho <em>mỗi</em> nhân viên tìm được, để lấy các lần bán của người đó:</p>
+      <pre class="sql"><code>SELECT … FROM sales WHERE subsidiary_id = ? AND employee_id = ?;</code></pre>
+      <p>Hai điều kiện này chính là <b>join predicate</b>: điều kiện nối mỗi lần bán với nhân viên của nó. <code>sales</code> chỉ có index của primary key <code>sale_id</code>, không giúp gì cho hai column này. Không có index thì mỗi lần chạy là một full table scan <code>sales</code>, <span data-fact="c:sales">1.000.000</span> row, và với <span data-fact="c:win">8</span> nhân viên là <span data-fact="c:win">8</span> lần đọc cả table. Cả hai điều kiện đều là toán tử bằng, nên một concatenated index trên hai column đó dẫn thẳng tới các lần bán của một nhân viên (chương 2, mục Concatenated Indexes):</p>
+      <pre class="sql"><code>CREATE INDEX sales_emp ON sales (subsidiary_id, employee_id);</code></pre>
+      <p>Có index này, tìm các lần bán của Markus Winand (subsidiary 30, nhân viên 123) chỉ đọc <span data-fact="p:nplus1-one:blocks">4</span> block để ra <span data-fact="p:nplus1-one:rows">7</span> lần bán.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Nested loops join</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="nested" role="img" aria-label="Mỗi nhân viên từ query ngoài dẫn tới một lần tra B-tree sales_emp, rồi tới các sales của người đó." style="min-width:520px"></svg></div>
+        <figcaption>Mỗi row của query ngoài kéo theo một lần duyệt B-tree <code>sales_emp</code>: chính là các câu select của ORM, nhưng chạy trong database.</figcaption>
+      </figure>
+      <p>Join trong SQL vẫn hiệu quả hơn nested select, dù nó tra index y như vậy, vì nó tránh được rất nhiều lần giao tiếp qua mạng. Nó còn nhanh hơn cả khi tổng lượng dữ liệu truyền đi nhiều hơn, vì thông tin nhân viên lặp lại ở mỗi lần bán. Đó là do hai chiều của hiệu năng ở chương 3: thời gian phản hồi và throughput. Trong mạng máy tính, hai chiều đó gọi là latency (độ trễ) và bandwidth (băng thông). Bandwidth ảnh hưởng ít tới thời gian phản hồi, còn latency ảnh hưởng rất nhiều. Nghĩa là với thời gian phản hồi, số lần đi về giữa ứng dụng và database quan trọng hơn lượng dữ liệu truyền đi.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Thời gian phản hồi của hai cách</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="latency" role="img" aria-label="N+1: chín khoảng độ trễ nối tiếp nhau, mỗi khoảng kèm một chút truyền dữ liệu. JOIN: một khoảng độ trễ và một đoạn truyền dữ liệu dài hơn." style="min-width:520px"></svg></div>
+        <figcaption>Mỗi lần đi về tốn một khoảng độ trễ. JOIN truyền nhiều dữ liệu hơn nhưng chỉ chờ độ trễ một lần.</figcaption>
+      </figure>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Chạy join trong database.
+      </aside>
+      <p>Phần lớn ORM có cách sinh ra SQL join. Quan trọng nhất có lẽ là chế độ <b>eager fetching</b>, thường cấu hình ở mức property trong entity mapping, ví dụ property <code>employees</code> trong class <code>Sales</code>. ORM sẽ luôn join table <code>employees</code> mỗi khi đọc table <code>sales</code>. Cấu hình eager fetching trong mapping chỉ hợp lý khi lúc nào cũng cần thông tin nhân viên kèm dữ liệu bán hàng.</p>
+      <p>Eager fetching phản tác dụng khi không phải lần nào đọc object cha cũng cần các record con. Với ứng dụng danh bạ, nạp cả <code>sales</code> khi hiện thông tin nhân viên là vô nghĩa. Có lúc cần dữ liệu bán hàng, nhưng không phải lúc nào cũng cần. Cấu hình tĩnh không phải giải pháp. Muốn hiệu năng tốt nhất, phải nắm toàn quyền quyết định join lúc chạy.</p>
+      <details class="plan-more">
+        <summary>Điều khiển join lúc chạy trong ORM (Java, Perl, PHP, theo sách)</summary>
+        <p><b>Java</b>, JPA: <code>Root&lt;&gt;.fetch()</code> chỉ định khi nào và join thế nào. Ví dụ dùng left join để lấy cả nhân viên chưa có lần bán nào.</p>
+        <pre class="sql"><code>CriteriaBuilder qb = em.getCriteriaBuilder();
+CriteriaQuery&lt;Employees&gt; q = qb.createQuery(Employees.class);
+Root&lt;Employees&gt; r = q.from(Employees.class);
+q.where(queryBuilder.like(
+    queryBuilder.upper(r.get(Employees_.lastName)),
+    "WIN%")
+);
+r.fetch("sales", JoinType.LEFT);
+// needed to avoid duplication of Employee records
+query.distinct(true);
+List&lt;Employees&gt; emp = em.createQuery(query).getResultList();</code></pre>
+        <p>Cảnh báo của sách: JPA và Hibernate trả về nhân viên cho mỗi lần bán, nên người có 30 lần bán xuất hiện 30 lần. Đó là hành vi theo đặc tả (EJB 3.0, mục 4.4.5.3 "Fetch Joins"); phải tự lọc trùng hoặc dùng <code>distinct()</code>. Hibernate 3.6.0 sinh ra:</p>
+        <pre class="sql"><code>select distinct
+       employees0_.subsidiary_id as subsidiary1_0_0_
+     , employees0_.employee_id as employee2_0_0_
+       -- MORE COLUMNS
+     , sales1_.sale_id as sale1_0__
+  from employees employees0_
+  left outer join sales sales1_
+          on employees0_.subsidiary_id=sales1_.subsidiary_id
+         and employees0_.employee_id=sales1_.employee_id
+ where upper(employees0_.last_name) like ?</code></pre>
+        <p>Có left join như mong muốn, nhưng thêm cả <code>distinct</code> không cần thiết. Từ khóa này đáng lo, vì phần lớn database sẽ thật sự lọc trùng; chỉ vài database nhận ra primary key đã bảo đảm không trùng. API gốc của Hibernate giải quyết ở phía client bằng result set transformer:</p>
+        <pre class="sql"><code>Criteria c = session.createCriteria(Employees.class);
+c.add(Restrictions.ilike("lastName", 'Win%'));
+c.setFetchMode("sales", FetchMode.JOIN);
+c.setResultTransformer(Criteria.DISTINCT_ROOT_ENTITY);
+List&lt;Employees&gt; result = c.list();</code></pre>
+        <pre class="sql"><code>select this_.subsidiary_id as subsidiary1_0_1_
+     , this_.employee_id as employee2_0_1_
+       -- MORE this_ columns on employees
+     , sales2_.sale_id as sale1_3_
+       -- MORE sales2_ columns on sales
+  from employees this_
+  left outer join sales sales2_
+          on this_.subsidiary_id=sales2_.subsidiary_id
+         and this_.employee_id=sales2_.employee_id
+ where lower(this_.last_name) like ?</code></pre>
+        <p>Câu SQL gọn, không có mệnh đề thừa. Để ý Hibernate dùng <code>lower()</code> cho tìm kiếm không phân biệt hoa thường: chi tiết quan trọng khi tạo function-based index.</p>
+        <p><b>Perl</b>, DBIx::Class với <code>prefetch</code>:</p>
+        <pre class="sql"><code>my @employees =
+   $schema-&gt;resultset('Employees')
+          -&gt;search({ 'UPPER(last_name)' =&gt; {-like =&gt; 'WIN%'}
+                   , {prefetch =&gt; ['sales']}
+                   });</code></pre>
+        <pre class="sql"><code>SELECT me.employee_id, me.subsidiary_id, me.last_name
+       -- MORE COLUMNS
+  FROM employees me
+  LEFT JOIN sales sales
+         ON (sales.employee_id   = me.employee_id
+        AND  sales.subsidiary_id = me.subsidiary_id)
+ WHERE ( UPPER(last_name) LIKE ? )
+ ORDER BY sales.employee_id, sales.subsidiary_id</code></pre>
+        <p>Để ý mệnh đề <code>order by</code>: ứng dụng không hề yêu cầu. Database phải sắp xếp kết quả theo đó, và việc này có thể tốn thời gian.</p>
+        <p><b>PHP</b>, Doctrine:</p>
+        <pre class="sql"><code>$qb = $em-&gt;createQueryBuilder();
+$qb-&gt;select('e,s')
+   -&gt;from('Employees', 'e')
+   -&gt;leftJoin('e.sales', 's')
+   -&gt;where("upper(e.last_name) like :last_name")
+   -&gt;setParameter('last_name', 'WIN%');
+$r = $qb-&gt;getQuery()-&gt;getResult();</code></pre>
+        <pre class="sql"><code>SELECT e0_.employee_id AS employee_id0
+       -- MORE COLUMNS
+  FROM employees e0_
+  LEFT JOIN sales s1_
+         ON e0_.subsidiary_id = s1_.subsidiary_id
+        AND e0_.employee_id = s1_.employee_id
+ WHERE UPPER(e0_.last_name) LIKE ?</code></pre>
+      </details>
+    </div>
+
+    <div class="step reveal">
+      <h3>Plan: NESTED LOOPS, tra index cho từng nhân viên</h3>
+      <p>Khi được bảo join (cách làm ở khối "Điều khiển join lúc chạy" ở trên), ORM gửi một câu LEFT JOIN duy nhất thay cho N+1 câu select. Câu do Doctrine sinh ra, bỏ bớt danh sách column:</p>
+      <pre class="sql"><code>SELECT …
+  FROM employees e
+  LEFT JOIN sales s
+         ON e.subsidiary_id = s.subsidiary_id
+        AND e.employee_id   = s.employee_id
+ WHERE UPPER(e.last_name) LIKE 'WIN%';</code></pre>
+      <p>LEFT JOIN giữ cả những nhân viên chưa có lần bán nào. Plan Oracle của câu này, in trong sách, có thao tác <code>NESTED LOOPS OUTER</code>:</p>
+      <pre class="sql"><code>|Id |Operation                    | Name        | Rows | Cost |
+| 0 |SELECT STATEMENT             |             |  822 |   38 |
+| 1 | NESTED LOOPS OUTER          |             |  822 |   38 |
+| 2 |  TABLE ACCESS BY INDEX ROWID| EMPLOYEES   |    1 |    4 |
+|*3 |   INDEX RANGE SCAN          | EMP_UP_NAME |    1 |      |
+| 4 |  TABLE ACCESS BY INDEX ROWID| SALES       |  821 |   34 |
+|*5 |   INDEX RANGE SCAN          | SALES_EMP   |   31 |      |
+
+Predicate Information (identified by operation id):
+  3 - access(UPPER("LAST_NAME") LIKE 'WIN%')
+      filter(UPPER("LAST_NAME") LIKE 'WIN%')
+  5 - access("E0_"."SUBSIDIARY_ID"="S1_"."SUBSIDIARY_ID"(+)
+        AND  "E0_"."EMPLOYEE_ID"  ="S1_"."EMPLOYEE_ID"(+))</code></pre>
+      <p>Database lấy kết quả từ <code>employees</code> qua <code>emp_up_name</code> trước, rồi với mỗi nhân viên lấy các record tương ứng từ <code>sales</code>. Cùng câu SQL trên PostgreSQL:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>LEFT JOIN, UPPER(last_name) LIKE 'WIN%'</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="nl"></div>
+      </figure>
+      <p>Cùng một hình dạng: <code>Nested Loop</code> với hai <code>Index Scan</code>. Index Scan trên <code>sales_emp</code> chạy <span data-fact="p:nl:loops">8</span> lần, mỗi nhân viên một lần, và tổng cộng ra <span data-fact="c:win_sales">73</span> lần bán. Cả query đọc <span data-fact="p:nl:blocks">43</span> block, trung vị <span data-fact="t:nl">0,055</span> ms. PostgreSQL cũng có index cond và filter cho cùng điều kiện LIKE, giống access và filter predicate trong plan của sách.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Hiểu ORM của mình và nắm quyền điều khiển join.
+      </aside>
+      <p>Nested loops join cho hiệu năng tốt nếu driving query trả về ít row. Ngược lại, optimizer có thể chọn một thuật toán join khác hẳn, như hash join ở mục sau. Nhưng chỉ khi ứng dụng dùng join để nói với database nó thật sự cần dữ liệu gì.</p>
+    </div>
+  </section>
+
+  <!-- ===================== Hash Join ===================== -->
+  <section id="hash">
+    <div class="reveal">
+      <h2>Hash Join</h2>
+      <p class="sub">Thay vì tra B-tree cho từng row, nạp một phía của join vào bảng băm trong bộ nhớ một lần. Index trên các column join không giúp gì; index cho điều kiện chỉ lọc một table thì có.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Bảng băm thay cho những lần duyệt B-tree</h3>
+      <p>Nested loops join nhanh khi query bên ngoài trả về ít row, như 8 nhân viên ở mục trước: 8 lần duyệt B-tree là không đáng kể. Nhưng mỗi row bên ngoài vẫn kéo theo một lần duyệt B-tree. Nếu query bên ngoài trả về hàng chục nghìn row, sẽ có hàng chục nghìn lần duyệt tree. Đó là điểm yếu mà hash join nhắm vào.</p>
+      <p>Ví dụ của sách cho mục này: lấy mọi lần bán trong sáu tháng gần nhất, kèm thông tin của nhân viên đã bán.</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales s
+  JOIN employees e ON (s.subsidiary_id = e.subsidiary_id
+                  AND  s.employee_id   = e.employee_id  )
+ WHERE s.sale_date &gt; DATE '2024-12-31' - INTERVAL '6' MONTH;</code></pre>
+      <p>Sách tính sáu tháng tính từ ngày hôm nay. Ở đây mốc được cố định là ngày 31/12/2024, ngày cuối cùng có dữ liệu, để kết quả không đổi theo ngày chạy. Table <code>sales</code> chứa <span data-fact="c:sales">1.000.000</span> lần bán của 10 năm, 2015–2024. Sáu tháng cuối có <span data-fact="c:six_months">50.650</span> lần bán, gần bằng con số trong ví dụ của sách (49.244).</p>
+      <p>Với nested loops, query này sẽ duyệt B-tree của <code>employees</code> khoảng năm mươi nghìn lần, mỗi lần bán một lần. Hash join làm khác: nó đọc một table một lượt và nạp các row vào một <b>hash table</b> (bảng băm) trong bộ nhớ, rồi đọc table kia và với mỗi row, dò bảng băm để tìm row tương ứng. Dò bảng băm trong bộ nhớ nhanh hơn nhiều so với duyệt một B-tree.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Hash join</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="hash" role="img" aria-label="Bước 1: đọc employees một lượt, đặt từng row vào bảng băm theo key (subsidiary_id, employee_id). Bước 2: đọc sales, bỏ các row không qua điều kiện ngày, các row còn lại dò bảng băm để tìm nhân viên." style="min-width:560px"></svg></div>
+        <figcaption>Dựng bảng băm một lần, rồi mỗi row sales chỉ cần một lần dò trong bộ nhớ. Điều kiện ngày lọc sales trước khi dò.</figcaption>
+      </figure>
+      <p>Muốn biết index nào giúp được hash join, hãy nhìn lại query. Nó có hai loại điều kiện:</p>
+      <ul class="sq-list">
+        <li><span><b>Join predicate</b>: <code>s.subsidiary_id = e.subsidiary_id AND s.employee_id = e.employee_id</code>. Điều kiện này nối hai table với nhau, nên chỉ kiểm tra được khi đã có row của cả hai table. Trong hash join, việc kiểm tra nó do bảng băm làm: key của bảng băm chính là các column join.</span></li>
+        <li><span><b>Điều kiện độc lập</b> (independent predicate): <code>s.sale_date &gt; …</code>. Điều kiện này chỉ nhắc tới một table, <code>sales</code>, nên kiểm tra được ngay lúc đọc từng row của <code>sales</code>, không cần biết gì về <code>employees</code>.</span></li>
+      </ul>
+      <p>Vì bảng băm đã lo phần join predicate, index trên các column join không còn việc gì để làm. Index chỉ giúp được lúc đọc từng table: nó giúp đọc ít row hơn, nếu có một điều kiện độc lập để lọc.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Index các điều kiện độc lập trong WHERE để cải thiện hiệu năng hash join.
+      </aside>
+      <p>Plan Oracle của query trên, in trong sách:</p>
+      <pre class="sql"><code>| Id | Operation          | Name      | Rows  | Bytes | Cost |
+|  0 | SELECT STATEMENT   |           | 49244 |    59M| 12049|
+|* 1 |  HASH JOIN         |           | 49244 |    59M| 12049|
+|  2 |   TABLE ACCESS FULL| EMPLOYEES | 10000 |     9M|   478|
+|* 3 |   TABLE ACCESS FULL| SALES     | 49244 |    10M| 10521|
+
+Predicate Information (identified by operation id):
+   1 - access("S"."SUBSIDIARY_ID"="E"."SUBSIDIARY_ID"
+          AND "S"."EMPLOYEE_ID"  ="E"."EMPLOYEE_ID")
+   3 - filter("S"."SALE_DATE"&gt;TRUNC(SYSDATE@!)
+                           -INTERVAL'+00-06' YEAR(2) TO MONTH)</code></pre>
+      <p>Bước đầu là full table scan nạp mọi nhân viên vào bảng băm (id 2). Bảng băm dùng join predicate làm key. Bước sau, database full table scan <code>sales</code> và bỏ mọi lần bán không thỏa điều kiện <code>sale_date</code> (id 3). Với các record còn lại, database tra bảng băm để lấy thông tin nhân viên. PostgreSQL chạy cùng plan đó:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Hash join, chưa có index trên sale_date</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="hash-full"></div>
+      </figure>
+      <p>PostgreSQL ghi bước dựng bảng băm thành node riêng, <code>Hash</code>, nằm dưới <code>Hash Join</code>. Mục đích duy nhất của bảng băm là làm cấu trúc tạm trong bộ nhớ để khỏi phải vào table <code>employees</code> nhiều lần. Bảng băm được nạp một lượt, nên không cần index để lấy từng record. Plan cũng không lọc gì trên <code>employees</code>, vì query không có điều kiện nào chỉ nhắc tới <code>employees</code>. Các index có sẵn trên join predicate, primary key của <code>employees</code> và <code>sales_emp</code>, không được dùng.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Index join predicate không cải thiện hiệu năng hash join.
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Index cho điều kiện độc lập</h3>
+      <p>Vậy index nào giúp được query này? Câu trả lời nằm ở điều kiện độc lập duy nhất của nó, điều kiện trên <code>sale_date</code>. Plan ở trên cho thấy vì sao: không có index, database đọc cả <span data-fact="c:sales">1.000.000</span> row của <code>sales</code> rồi bỏ <span data-fact="p:hash-full:removed">949.350</span> row không thuộc sáu tháng gần nhất. Điều kiện này chỉ nhắc tới <code>sales</code>, nên một index trên <code>sale_date</code> dẫn thẳng tới đoạn sáu tháng đó, như mọi điều kiện khoảng ở chương 2, mà không cần đụng tới <code>employees</code>:</p>
+      <pre class="sql"><code>CREATE INDEX sales_date ON sales (sale_date);</code></pre>
+      <p>Plan Oracle trong sách, sau khi có index này. <code>sales</code> được đọc qua index (dòng 3–4), còn <code>employees</code> vẫn full table scan, vì không có điều kiện nào lọc riêng table đó:</p>
+      <pre class="sql"><code>| Id | Operation                    | Name      | Bytes| Cost|
+|  0 | SELECT STATEMENT             |           |   59M| 3252|
+|* 1 |  HASH JOIN                   |           |   59M| 3252|
+|  2 |   TABLE ACCESS FULL          | EMPLOYEES |    9M|  478|
+|  3 |   TABLE ACCESS BY INDEX ROWID| SALES     |   10M| 1724|
+|* 4 |    INDEX RANGE SCAN          | SALES_DATE|      |     |</code></pre>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Hash join, có index sales_date</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="hash-date"></div>
+      </figure>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Cùng query, ba cách</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="hash"></div>
+        <figcaption>Trung vị 21 lần chạy, theo <code>EXPLAIN ANALYZE</code>. Cách thứ ba là chọn ít column hơn, ở phần dưới.</figcaption>
+      </figure>
+      <p>Trong sách, cost của cả query (dòng 0 của hai plan Oracle) giảm từ 12.049 xuống 3.252. Trên máy này, thời gian giảm từ <span data-fact="t:hash_full">144</span> ms xuống <span data-fact="t:hash_date">95</span> ms. PostgreSQL đọc <code>sales</code> qua <code>Bitmap Heap Scan</code>: mỗi block chứa lần bán trong sáu tháng chỉ đọc một lần (chương 2, Slow Indexes). Vì lần bán của sáu tháng nằm rải khắp table, số block gần như không bớt (<span data-fact="p:hash-full:blocks">7.327</span> so với <span data-fact="p:hash-date:blocks">7.379</span>); phần nhanh hơn nhiều khả năng đến từ chỗ không phải kiểm tra điều kiện ngày trên cả <span data-fact="c:sales">1.000.000</span> row.</p>
+      <p>Còn một khác biệt với nested loops. Ở nested loops, index cần có phụ thuộc thứ tự join: table bên trong (ở mục trước là <code>sales</code>) được tra một lần cho mỗi row bên ngoài, nên nó cần index trên các column join. Đảo thứ tự thì phải index table kia. Hash join thì đối xứng. Dù database dựng bảng băm từ <code>employees</code> hay từ <code>sales</code>, index <code>sales_date</code> vẫn làm đúng một việc: giúp đọc <code>sales</code> nhanh hơn.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Đảo thứ tự join, index vẫn như cũ</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="symmetry" role="img" aria-label="Hai trường hợp: employees dựng bảng băm và sales dò, hoặc sales dựng bảng băm và employees dò. Trong cả hai, sales đọc qua index sales_date và employees đọc bằng full table scan." style="min-width:520px"></svg></div>
+        <figcaption>Dù table nào dựng bảng băm, <code>sales</code> vẫn đọc qua <code>sales_date</code> và <code>employees</code> vẫn full table scan.</figcaption>
+      </figure>
+      <aside class="box">
+        <b class="k">Lưu ý</b>
+        Index cho hash join không phụ thuộc thứ tự join.
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Bảng băm nhỏ hơn: chọn ít column hơn</h3>
+      <p>Một cách hoàn toàn khác để cải thiện hash join là thu nhỏ bảng băm. Cách này hiệu quả vì hash join chỉ tối ưu khi cả bảng băm nằm vừa trong bộ nhớ. Optimizer vì vậy tự dùng phía nhỏ hơn của join làm bảng băm. Plan Oracle ghi lượng bộ nhớ ước tính ở cột "Bytes": ở plan trên, <code>employees</code> cần 9 MB, là phía nhỏ hơn.</p>
+      <p>Cũng có thể thu nhỏ bảng băm bằng cách sửa câu SQL, ví dụ thêm điều kiện để database nạp ít record ứng viên hơn vào bảng băm. Với ví dụ trên, đó là thêm một điều kiện trên thuộc tính <code>department</code> để chỉ xét nhân viên bán hàng. Cách này cải thiện hash join kể cả khi không có index trên <code>department</code>, vì database không phải lưu vào bảng băm những nhân viên không thể có lần bán nào. Khi làm vậy phải chắc chắn không có record <code>sales</code> nào của nhân viên thuộc phòng ban khác. Dùng constraint để bảo vệ giả định đó.</p>
+      <p>Khi thu nhỏ bảng băm, yếu tố quan trọng không phải số row mà là dung lượng bộ nhớ. Thực ra cũng có thể thu nhỏ bảng băm bằng cách chọn ít column hơn, chỉ những thuộc tính thật sự cần:</p>
+      <pre class="sql"><code>SELECT s.sale_date, s.eur_value
+     , e.last_name, e.first_name
+  FROM sales s
+  JOIN employees e ON (s.subsidiary_id = e.subsidiary_id
+                  AND  s.employee_id   = e.employee_id  )
+ WHERE s.sale_date &gt; DATE '2024-12-31' - INTERVAL '6' MONTH;</code></pre>
+      <p>Cách này hiếm khi gây lỗi, vì bỏ nhầm column thường sẽ sớm báo lỗi. Trong sách, nó cắt bảng băm từ 9 MB xuống 234 KB, giảm 97%. Trong sách, mỗi nhân viên chiếm khoảng 900 byte trong bảng băm (9 MB cho 10.000 nhân viên), vì table của sách có những column lớn. Table <code>employees</code> ở đây không có column lớn như vậy, nên mỗi row trong bảng băm chỉ hẹp đi từ <span data-fact="h:full:width">43</span> xuống <span data-fact="h:cols:width">25</span> byte. Chừng đó có đáng kể không? Phải xem bảng băm có vừa bộ nhớ hay không.</p>
+      <p>PostgreSQL không cho một thao tác dùng bao nhiêu bộ nhớ cũng được. Mỗi thao tác sắp xếp hay băm được cấp tối đa <code>work_mem</code> (mặc định <span data-fact="c:work_mem">4MB</span>); riêng bảng băm được gấp <code>hash_mem_multiplier</code> lần mức đó, ở đây là <span data-fact="h:mem">8 MB</span>. Bảng băm lớn hơn mức này thì PostgreSQL chia các row thành nhiều phần, gọi là <b>batch</b>: mỗi lúc chỉ giữ một batch trong bộ nhớ, các batch còn lại ghi tạm ra đĩa rồi đọc lại sau. Ghi và đọc lại đĩa tạm là phần việc thêm mà một bảng băm vừa bộ nhớ không phải làm. Với hai câu SQL ở đây:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Bảng băm và bộ nhớ dành cho nó</h4><span class="tag real">Đo thực tế</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="hashsize" role="img" style="min-width:520px"></svg></div>
+        <figcaption>Với <code>SELECT *</code>, bảng băm lớn hơn bộ nhớ được cấp, nên PostgreSQL chia làm hai batch và ghi phần còn lại ra đĩa tạm. Chọn ít column thì bảng băm vừa trong một batch.</figcaption>
+      </figure>
+      <p>Chọn ít column, thời gian giảm tiếp xuống <span data-fact="t:hash_cols">65</span> ms (biểu đồ ở trên).</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Chọn ít column hơn để cải thiện hiệu năng hash join.
+      </aside>
+      <p>Thoạt nhìn thì bỏ vài column khỏi câu SQL có vẻ đơn giản, nhưng với ORM đó là thách thức thật sự. Hỗ trợ cho cái gọi là partial object rất ít.</p>
+      <details class="plan-more">
+        <summary>Chọn ít column trong ORM (Java, Perl, PHP, theo sách)</summary>
+        <p><b>Java</b>: JPA định nghĩa <code>FetchType.LAZY</code> trong annotation <code>@Basic</code>, áp dụng ở mức property:</p>
+        <pre class="sql"><code>@Column(name="junk")
+@Basic(fetch=FetchType.LAZY)
+private String junk;</code></pre>
+        <p>Nhưng provider được phép bỏ qua nó (EJB 3.0 JPA, mục 9.1.18). Hibernate 3.6 cài lazy property fetching bằng bytecode instrumentation lúc compile. Cách này trong suốt với ứng dụng, nhưng mở ra một chiều mới của N+1: một câu select cho mỗi record và mỗi property. Nguy hiểm hơn nữa vì JPA không cho chọn eager fetching lúc chạy khi cần. HQL của Hibernate giải quyết bằng mệnh đề <code>FETCH ALL PROPERTIES</code>:</p>
+        <pre class="sql"><code>select s from Sales s FETCH ALL PROPERTIES
+ inner join fetch s.employee e FETCH ALL PROPERTIES
+ where s.saleDate &gt;:dt</code></pre>
+        <p>Một cách khác là dùng data transport object (DTO) thay cho entity, khởi tạo object ngay trong query (HQL và JPQL như nhau):</p>
+        <pre class="sql"><code>select new SalesHeadDTO(s.saleDate , s.eurValue
+                       ,e.firstName, e.lastName)
+  from Sales s
+  join s.employee e
+ where s.saleDate &gt; :dt</code></pre>
+        <p><b>Perl</b>: DBIx::Class không đóng vai entity manager, nên kế thừa không gây vấn đề aliasing. Định nghĩa class <code>Sales</code> ở hai mức:</p>
+        <pre class="sql"><code>package UseTheIndexLuke::Schema::Result::SalesHead;
+use base qw/DBIx::Class::Core/;
+__PACKAGE__-&gt;table('sales');
+__PACKAGE__-&gt;add_columns(qw/sale_id employee_id subsidiary_id
+                            sale_date eur_value/);
+__PACKAGE__-&gt;set_primary_key(qw/sale_id/);
+__PACKAGE__-&gt;belongs_to('employee', 'Employees',
+           {'foreign.employee_id'   =&gt; 'self.employee_id'
+           ,'foreign.subsidiary_id' =&gt; 'self.subsidiary_id'});
+
+package UseTheIndexLuke::Schema::Result::Sales;
+use base qw/UseTheIndexLuke::Schema::Result::SalesHead/;
+__PACKAGE__-&gt;table('sales');
+__PACKAGE__-&gt;add_columns(qw/junk/);</code></pre>
+        <pre class="sql"><code>my @sales =
+   $schema-&gt;resultset('SalesHead')
+          -&gt;search($cond
+                  ,{      join =&gt; 'employee'
+                   ,'+columns' =&gt; ['employee.first_name'
+                                  ,'employee.last_name']
+                   }
+                  );</code></pre>
+        <p>Không chọn được column của table gốc (<code>SalesHead</code>): câu SQL lấy mọi column của <code>sales</code> và chỉ các thuộc tính được chọn của <code>employees</code>.</p>
+        <p><b>PHP</b>: Doctrine 2 chọn thuộc tính lúc chạy bằng từ khóa <code>partial</code>, và phải chọn rõ các column primary key:</p>
+        <pre class="sql"><code>$qb = $em-&gt;createQueryBuilder();
+$qb-&gt;select('partial s.{sale_id, sale_date, eur_value},'
+          . 'partial e.{employee_id, subsidiary_id, '
+                     . 'first_name , last_name}')
+   -&gt;from('Sales', 's')
+   -&gt;join('s.employee', 'e')
+   -&gt;where("s.sale_date &gt; :dt")
+   -&gt;setParameter('dt', $dt, Type::DATETIME);</code></pre>
+        <p>Object trả về tương thích với object đầy đủ, nhưng các column không chọn vẫn chưa khởi tạo, và truy cập chúng không báo lỗi.</p>
+      </details>
+      <aside class="box">
+        <b class="k">MySQL</b>
+        Sách (2012) ghi MySQL hoàn toàn không hỗ trợ hash join. MySQL đã có hash join từ bản 8.0.18 (2019).
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===================== Sort Merge ===================== -->
+  <section id="merge">
+    <div class="reveal">
+      <h2>Sort Merge</h2>
+      <p class="sub">Ghép hai danh sách đã sắp xếp như kéo khóa. Đối xứng tuyệt đối, nhưng sắp xếp cả hai phía rất tốn kém, trừ khi index đã cho sẵn thứ tự.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Kéo khóa hai danh sách đã sắp xếp</h3>
+      <p>Sort-merge join ghép hai danh sách đã sắp xếp như một chiếc khóa kéo. Cả hai phía của join phải được sắp theo join predicate.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Sort-merge join</h4><span class="tag">Minh họa</span></div>
+        <div class="scroll-x" data-ui><svg class="sk" data-fig="zipper" role="img" aria-label="Hai danh sách key đã sắp: employees 1, 2, 3, 5, 6 và sales 1, 1, 3, 4, 6, 6. Các key bằng nhau được nối. Key 2 và 5 chỉ có ở employees, key 4 chỉ có ở sales." style="min-width:520px"></svg></div>
+        <figcaption>Hai con trỏ đi xuống cùng lúc, không bao giờ quay lại. Row không có cặp (tô cam) được giữ hay bỏ tùy loại outer join, nhưng cách đi không đổi.</figcaption>
+      </figure>
+      <p>Sort-merge join cần cùng loại index như hash join: index cho các điều kiện độc lập, để đọc mọi record ứng viên một lượt. Index join predicate là vô ích. Tới đây mọi thứ giống hash join. Nhưng sort-merge join có một điểm riêng: đối xứng tuyệt đối. Thứ tự join không tạo khác biệt gì, kể cả về hiệu năng. Tính chất này rất có ích cho outer join. Với các thuật toán khác, chiều của outer join (left hay right) quyết định thứ tự join; với sort-merge join thì không. Sort-merge join thậm chí làm được left và right outer join cùng lúc: cái gọi là full outer join.</p>
+      <p>Sort-merge join chạy rất tốt khi đầu vào đã sắp xếp, nhưng hiếm khi được dùng, vì sắp xếp cả hai phía rất tốn kém. Hash join chỉ phải xử lý trước một phía.</p>
+      <p>Sách không có ví dụ riêng cho mục này. Để xem PostgreSQL chạy sort-merge join thế nào, có thể tắt hash join cho phiên làm việc (<code>SET enable_hashjoin = off</code>, thay cho một hint) và chạy lại query chọn ít column ở trên:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Cùng query, không cho dùng hash join</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="merge"></div>
+      </figure>
+      <p>Phía <code>sales</code> phải qua một bước <code>Sort</code>. Phía <code>employees</code> thì không: PostgreSQL đọc nó theo thứ tự của primary key (<code>Index Scan</code> trên <code>employees_pkey</code>), vốn đã sắp theo đúng các column join. Đó chính là điểm mạnh của sort-merge join đã nói ở trên: tận dụng thứ tự của index để khỏi phải sắp xếp. Cái giá là đọc <code>employees</code> từng row theo index, <span data-fact="p:merge:blocks">106.587</span> lần đọc block. Kết quả: <span data-fact="t:merge">84</span> ms, chậm hơn hash join chọn ít column (<span data-fact="t:hash_cols">65</span> ms), nên khi được phép, PostgreSQL chọn hash join.</p>
+      <p>Chương 6, "Sorting and Grouping", giải thích kỹ cách dùng thứ tự của index để tránh hẳn bước sắp xếp. Dù vậy, trong nhiều trường hợp hash join vẫn tốt hơn.</p>
+    </div>
+  </section>
+</div>
+
+<footer class="foot reveal">
+  <div class="foot-mark" role="img" aria-label="INDEX"><span>I</span><span>N</span><span>D</span><span>E</span><span>X</span></div>
+  <div class="foot-cols">
+    <div><h3>Chương</h3><ul><li><a href="ch1-anatomy-of-an-index.html">Giải phẫu một index</a></li><li><a href="ch2-the-where-clause.html">Mệnh đề WHERE</a></li><li><a href="ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a></li><li><a href="ch4-the-join-operation.html">Phép JOIN</a></li></ul></div>
+    <div><h3>Thí nghiệm</h3><ul><li><a href="../sql/ch4-benchmarks.sql">ch4-benchmarks.sql</a></li></ul></div>
+    <div><h3>Nguồn</h3><ul><li><a href="https://sql-performance-explained.com/">SQL Performance Explained</a></li><li><a href="https://use-the-index-luke.com/">Use The Index, Luke</a></li></ul></div>
+    <div><p>Số đo chạy trên PostgreSQL thật: employees 100.000 row, sales 1.000.000 row sinh với seed cố định. Một process cho mỗi query (tắt parallel query) để plan giống sách.</p></div>
+  </div>
+  <div class="foot-last"><span>Nội dung tóm tắt từ sách của Markus Winand.</span><a class="top" href="#top">Lên đầu trang</a></div>
+</footer>
+
+<script src="../vendor/framer-motion-dom.js"></script>
+<script src="../vendor/rough.js"></script>
+<script type="module">import { site } from '../scripts/motion.js'; site();</script>
+<script type="module">
+  import { planTable, bars, blocks, fmt } from '../scripts/visualizations/plans.js';
+  import { figPairs, figPipeline, figRoundTrips, figLatency, figNestedLoops, figHashJoin, figSymmetry, figHashSize, figZipper } from '../scripts/visualizations/join-figures.js';
+
+  const fig = k => document.querySelector(`[data-fig="${k}"]`);
+  figPairs(fig('pairs'));
+  figPipeline(fig('pipeline'));
+  figHashJoin(fig('hash'));
+  figSymmetry(fig('symmetry'));
+  figZipper(fig('zipper'));
+  const fact = [2, 3, 4, 5, 6, 7, 8].map(n => [n, Array.from({ length: n }, (_, i) => i + 1).reduce((a, b) => a * b, 1)]);
+  bars(document.querySelector('[data-bars="fact"]'), fact.map(([n, v]) => ({ label: `${n} table`, value: v, text: `${n}! = ${fmt(v)}`, hot: n === 8 })));
+
+  const get = f => fetch(`../data/${f}`).then(r => (r.ok ? r.json() : Promise.reject(new Error(`${f}: ${r.status}`))));
+  const ms = n => n.toLocaleString('vi-VN', { maximumFractionDigits: n < 1 ? 3 : 0 });
+  const flat = p => [p, ...(p.Plans ?? []).flatMap(flat)];
+
+  try {
+    const ids = ['nl', 'nplus1-one', 'hash-full', 'hash-date', 'hash-cols', 'merge'];
+    const [counts, times, ...loaded] = await Promise.all([get('ch4/counts.json'), get('ch4/times.json'), ...ids.map(id => get(`ch4/${id}.json`))]);
+    const plans = Object.fromEntries(ids.map((id, i) => [id, loaded[i][0]]));
+    for (const el of document.querySelectorAll('[data-plan]')) el.innerHTML = planTable(plans[el.dataset.plan]);
+
+    figRoundTrips(fig('trips'), { n: counts.win, rows: counts.win_sales });
+    figLatency(fig('latency'), { n: counts.win });
+    figNestedLoops(fig('nested'), { n: counts.win });
+
+    // Node Hash của plan: số batch, bộ nhớ, số block ghi ra đĩa tạm, độ rộng row.
+    const hashNode = id => flat(plans[id].Plan).find(n => n['Node Type'] === 'Hash');
+    const hashMemKB = parseInt(counts.work_mem, 10) * 1024 * counts.hash_mem_multiplier;
+    const hashCase = (id, label) => {
+      const h = hashNode(id);
+      // Một batch: Peak Memory là cả bảng băm. Nhiều batch: mỗi batch chiếm tới Peak Memory.
+      return { label, width: h['Plan Width'], batches: h['Hash Batches'], temp: h['Temp Written Blocks'],
+        need: (h['Peak Memory Usage'] * h['Hash Batches']) / hashMemKB, hashMem: `${fmt(hashMemKB / 1024)} MB` };
+    };
+    figHashSize(fig('hashsize'), [hashCase('hash-date', 'SELECT *'), hashCase('hash-cols', 'Ít column')]);
+    fig('hashsize').setAttribute('aria-label', ['hash-date', 'hash-cols'].map(id => {
+      const h = hashNode(id);
+      return `${id === 'hash-date' ? 'SELECT *' : 'Ít column'}: ${h['Plan Width']} byte mỗi row, ${h['Hash Batches']} batch, ghi ${h['Temp Written Blocks']} block ra đĩa tạm`;
+    }).join('. '));
+
+    const facts = {
+      'c:win': counts.win, 'c:trips': counts.win + 1, 'c:win_sales': fmt(counts.win_sales),
+      'c:sales': fmt(counts.sales), 'c:employees': fmt(counts.employees), 'c:work_mem': counts.work_mem,
+      'p:hash-full:removed': fmt(flat(plans['hash-full'].Plan).reduce((t, n) => t + (n['Rows Removed by Filter'] ?? 0), 0)),
+      'p:nplus1-one:blocks': fmt(blocks(plans['nplus1-one'].Plan)), 'p:nplus1-one:rows': fmt(plans['nplus1-one'].Plan['Actual Rows']), 'c:six_months': fmt(counts.six_months),
+      'p:nl:loops': fmt(flat(plans.nl.Plan).find(n => n['Index Name'] === 'sales_emp')['Actual Loops']),
+      'p:nl:blocks': fmt(blocks(plans.nl.Plan)), 'p:hash-full:blocks': fmt(blocks(plans['hash-full'].Plan)),
+      'p:hash-date:blocks': fmt(blocks(plans['hash-date'].Plan)), 'p:merge:blocks': fmt(blocks(plans.merge.Plan)),
+      'h:full:width': hashNode('hash-date')['Plan Width'], 'h:cols:width': hashNode('hash-cols')['Plan Width'],
+      'h:mem': `${fmt(hashMemKB / 1024)} MB`,
+      ...Object.fromEntries(Object.entries(times).map(([k, v]) => [`t:${k}`, ms(v)])),
+    };
+    for (const el of document.querySelectorAll('[data-fact]')) el.textContent = facts[el.dataset.fact] ?? el.textContent;
+
+    const timeBar = (label, k, id, hot) => ({ label, value: times[k], text: `${ms(times[k])} ms · ${fmt(blocks(plans[id].Plan))} block`, hot });
+    bars(document.querySelector('[data-bars="hash"]'), [
+      timeBar('SELECT *, full table scan', 'hash_full', 'hash-full', true),
+      timeBar('SELECT *, index sales_date', 'hash_date', 'hash-date'),
+      timeBar('Ít column, index sales_date', 'hash_cols', 'hash-cols'),
+    ]);
+  } catch (e) {
+    for (const el of document.querySelectorAll('[data-plan], [data-bars="hash"], [data-fig="trips"], [data-fig="latency"], [data-fig="nested"], [data-fig="hashsize"]')) {
+      el.replaceWith(Object.assign(document.createElement('p'), { textContent: `Không tải được số liệu (${e.message}). Chạy npm start rồi mở qua http://localhost:8000.` }));
+    }
+  }
+</script>
+</body>
+</html>

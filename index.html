@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  <title>SQL Performance, trực quan</title>
+  <meta name="description" content="Bản tiếng Việt có hình và số đo thật trên PostgreSQL của cuốn SQL Performance Explained.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=IBM+Plex+Mono:wght@400;600&display=swap"> <!-- taste-skill-ignore: mono chỉ cho code SQL -->
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/base.css">
+  <link rel="stylesheet" href="styles/home.css">
+</head>
+<body>
+<a class="skip" href="#noi-dung">Bỏ qua tới nội dung</a>
+<nav class="bar" id="top" aria-label="Chính">
+  <a class="mark" href="index.html"><span class="sq"></span>SQL Performance, trực quan</a>
+  <ul>
+    <li><a href="lessons/ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="lessons/ch2-the-where-clause.html">Chương 2</a></li><li><a href="lessons/ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="lessons/ch4-the-join-operation.html">Chương 4</a></li>
+    <li class="opt"><a href="#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li>
+  </ul>
+</nav>
+
+<main id="noi-dung">
+  <section class="intro reveal">
+    <h1>Vì sao một câu SQL lại chậm?</h1>
+    <p class="lede">Bản tiếng Việt, có hình minh họa và số đo thật trên PostgreSQL, của cuốn <em>SQL Performance Explained</em> (Markus Winand, 2012).</p>
+    <p>Một câu SQL chỉ nói <em>muốn lấy dữ liệu gì</em>, không nói <em>lấy bằng cách nào</em>. Cách lấy do database tự chọn: đọc hết cả table, hay đi qua một <b>index</b> để tới thẳng những row cần tìm. Lựa chọn đó được ghi trong <b>execution plan</b>, thứ có thể xem bằng lệnh <code>EXPLAIN</code>.</p>
+    <p>Phần lớn query chậm không phải vì database yếu hay phần cứng thiếu. Chúng chậm vì không có index phù hợp, hoặc vì câu SQL được viết theo cách khiến index có sẵn không dùng được. Ví dụ ở chương 2: tìm một nhân viên theo họ trong table 100.000 row. Không có index, PostgreSQL phải đọc cả 957 block của table. Có index phù hợp, nó chỉ đọc 4 block.</p>
+    <p>Sách cho rằng index là việc của developer, không phải chỉ của người quản trị database. Lý do: chỉ người viết ứng dụng mới biết ứng dụng tìm dữ liệu theo những điều kiện nào, và index tốt là index khớp với các điều kiện đó.</p>
+    <h2>Cách đọc trang này</h2>
+    <ul class="sq-list">
+      <li><span>Mỗi bài đi theo một chương của sách, giữ đúng thứ tự mục, lập luận và ví dụ. Chữ "sách" trong bài là cuốn <em>SQL Performance Explained</em>.</span></li>
+      <li><span>Sách dùng Oracle. Ở đây mọi ví dụ được chạy lại trên PostgreSQL với cùng câu SQL. Plan và số đo trong bài là kết quả thật (<code>EXPLAIN (ANALYZE, BUFFERS)</code>). Chỗ nào PostgreSQL làm khác sách, bài ghi rõ.</span></li>
+      <li><span>Thuật ngữ như table, row, index, query, scan được giữ nguyên tiếng Anh, vì đó là chữ bạn sẽ gặp trong tài liệu và trong execution plan.</span></li>
+      <li><span>Chỉ cần biết SQL cơ bản (<code>SELECT</code>, <code>WHERE</code>, <code>JOIN</code>). Không cần biết trước index là gì: chương 1 bắt đầu từ đó.</span></li>
+    </ul>
+    <a class="cta" href="lessons/ch1-anatomy-of-an-index.html"><span class="sq"></span>Bắt đầu chương 1</a>
+  </section>
+
+  <section class="chapters reveal" id="chuong">
+    <div class="chapters-head">
+      <h2>Tám chương</h2>
+      <p>4 chương đã có</p>
+    </div>
+    <ul class="menu" data-stagger>
+      <li>
+        <img src="assets/ui/thumb-ch1.webp" alt="" width="128" height="128" loading="lazy">
+        <div><p class="row"><a href="lessons/ch1-anatomy-of-an-index.html">Giải phẫu một index</a><span>Đã có</span></p>
+        <p>Leaf node, B-tree và ba bước của một lần tra index. Vì sao có index vẫn có thể chậm.</p>
+        <p class="hl">100.000 entry, B-tree chỉ cao 3 tầng.</p></div>
+      </li>
+      <li>
+        <img src="assets/ui/thumb-ch2.webp" alt="" width="128" height="128" loading="lazy">
+        <div><p class="row"><a href="lessons/ch2-the-where-clause.html">Mệnh đề WHERE</a><span>Đã có</span></p>
+        <p>Concatenated index, function, bind parameter, khoảng và LIKE, partial index, các điều kiện bị che khuất.</p>
+        <p class="hl">LIKE 'WINA%': 5 block. Bind parameter: 957.</p></div>
+      </li>
+      <li>
+        <img src="assets/ui/thumb-ch3.webp" alt="" width="128" height="128" loading="lazy">
+        <div><p class="row"><a href="lessons/ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a><span>Đã có</span></p>
+        <p>Dữ liệu và tải tăng lên thì thời gian phản hồi đổi ra sao, và vì sao phần cứng lớn hơn không làm query nhanh hơn.</p>
+        <p class="hl">Dữ liệu gấp 100: index ẩu chậm đi khoảng 30 lần.</p></div>
+      </li>
+      <li>
+        <img src="assets/ui/thumb-ch4.webp" alt="" width="128" height="128" loading="lazy">
+        <div><p class="row"><a href="lessons/ch4-the-join-operation.html">Phép JOIN</a><span>Đã có</span></p>
+        <p>Nested loops, hash join, sort-merge join và index nào giúp từng loại.</p>
+        <p class="hl">Chọn ít column: bảng băm vừa bộ nhớ, hash join nhanh hơn.</p></div>
+      </li>
+      <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Gom cụm dữ liệu</span><span>Sắp có</span></p><p>Index-only scan, clustering factor, thêm column vào index để khỏi đọc table.</p></div></li>
+      <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Sắp xếp và gom nhóm</span><span>Sắp có</span></p><p>ORDER BY và GROUP BY tận dụng thứ tự có sẵn trong index.</p></div></li>
+      <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Kết quả từng phần</span><span>Sắp có</span></p><p>Top-N, paging bằng OFFSET và bằng seek.</p></div></li>
+      <li class="soon"><i aria-hidden="true"></i><div><p class="row"><span class="t">Thay đổi dữ liệu</span><span>Sắp có</span></p><p>Cái giá của mỗi index khi INSERT, UPDATE và DELETE.</p></div></li>
+    </ul>
+  </section>
+</main>
+
+<footer class="foot reveal">
+  <div class="foot-mark" role="img" aria-label="INDEX"><span>I</span><span>N</span><span>D</span><span>E</span><span>X</span></div>
+  <div class="foot-last"><span>Nội dung tóm tắt từ sách của Markus Winand.</span><a class="top" href="#top">Lên đầu trang</a></div>
+</footer>
+
+<script src="vendor/framer-motion-dom.js"></script>
+<script type="module">import { site } from './scripts/motion.js'; site();</script>
+</body>
+</html>

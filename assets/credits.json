@@ -1,0 +1,72 @@
+[
+  {
+    "file": "assets/schlagwortkatalog.jpg",
+    "media": "image",
+    "ref": "commons:483741",
+    "title": "Schlagwortkatalog",
+    "creator": "Dr. Marcus Gossler",
+    "creatorUrl": null,
+    "date": "2005-12-29",
+    "license": "CC BY-SA 3.0",
+    "licenseCode": "by-sa",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
+    "creditRequired": true,
+    "page": "https://commons.wikimedia.org/wiki/File:Schlagwortkatalog.jpg",
+    "via": "Wikimedia Commons",
+    "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7e/Schlagwortkatalog.jpg/1920px-Schlagwortkatalog.jpg",
+    "width": 1920,
+    "height": 1624,
+    "bytes": 488336,
+    "credit": "\"Schlagwortkatalog\" by Dr. Marcus Gossler, CC BY-SA 3.0, via Wikimedia Commons",
+    "notes": [
+      "Share-alike: an altered version (recoloured, combined with other pictures) must be shared under the same licence."
+    ],
+    "saved": "2026-10-23T18:40:52.598Z"
+  },
+  {
+    "file": "assets/drawers-nli.jpg",
+    "media": "image",
+    "ref": "commons:20456375",
+    "title": "Drawers NLI",
+    "creator": "יעל י",
+    "creatorUrl": null,
+    "date": "2012-07-18",
+    "license": "CC BY-SA 3.0",
+    "licenseCode": "by-sa",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+    "creditRequired": true,
+    "page": "https://commons.wikimedia.org/wiki/File:Drawers_NLI.jpg",
+    "via": "Wikimedia Commons",
+    "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/72/Drawers_NLI.jpg/1280px-Drawers_NLI.jpg",
+    "width": 1280,
+    "height": 1707,
+    "bytes": 572611,
+    "credit": "\"Drawers NLI\" by יעל י, CC BY-SA 3.0, via Wikimedia Commons",
+    "notes": [
+      "Share-alike: an altered version (recoloured, combined with other pictures) must be shared under the same licence."
+    ],
+    "saved": "2026-10-23T18:40:53.794Z"
+  },
+  {
+    "file": "assets/national-telephone-directory-from-october-1896.jpg",
+    "media": "image",
+    "ref": "commons:161413581",
+    "title": "National Telephone Directory from October 1896",
+    "creator": "Robert-brook",
+    "creatorUrl": null,
+    "date": "2020-02-16",
+    "license": "CC0",
+    "licenseCode": "cc0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "creditRequired": false,
+    "page": "https://commons.wikimedia.org/wiki/File:National_Telephone_Directory_from_October_1896.jpg",
+    "via": "Wikimedia Commons",
+    "image": "https://upload.wikimedia.org/wikipedia/commons/3/3a/National_Telephone_Directory_from_October_1896.jpg",
+    "width": 1536,
+    "height": 2048,
+    "bytes": 1024151,
+    "credit": "\"National Telephone Directory from October 1896\" by Robert-brook, CC0, via Wikimedia Commons",
+    "notes": [],
+    "saved": "2026-10-23T18:40:55.116Z"
+  }
+]

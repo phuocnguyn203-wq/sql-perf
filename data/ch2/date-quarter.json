@@ -1,0 +1,51 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "Forward",
+      "Index Name": "sales_date",
+      "Relation Name": "sales",
+      "Alias": "sales",
+      "Startup Cost": 0.79,
+      "Total Cost": 3725.14,
+      "Plan Rows": 12434,
+      "Plan Width": 30,
+      "Actual Startup Time": 0.115,
+      "Actual Total Time": 46.853,
+      "Actual Rows": 12473.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Index Cond": "((sale_date >= quarter_begin('2024-05-20 00:00:00+07'::timestamp with time zone)) AND (sale_date <= quarter_end('2024-05-20 00:00:00+07'::timestamp with time zone)))",
+      "Rows Removed by Index Recheck": 0,
+      "Index Searches": 1,
+      "Shared Hit Blocks": 12467,
+      "Shared Read Blocks": 34,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Planning": {
+      "Shared Hit Blocks": 10,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Planning Time": 0.289,
+    "Triggers": [
+    ],
+    "Execution Time": 47.278
+  }
+]

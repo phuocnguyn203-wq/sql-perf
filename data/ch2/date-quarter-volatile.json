@@ -1,0 +1,48 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "sales",
+      "Alias": "sales",
+      "Startup Cost": 0.00,
+      "Total Cost": 52334.00,
+      "Plan Rows": 11111,
+      "Plan Width": 30,
+      "Actual Startup Time": 0.243,
+      "Actual Total Time": 102.983,
+      "Actual Rows": 12473.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Filter": "((sale_date >= quarter_begin('2024-05-20 00:00:00+07'::timestamp with time zone)) AND (sale_date <= quarter_end('2024-05-20 00:00:00+07'::timestamp with time zone)))",
+      "Rows Removed by Filter": 87527,
+      "Shared Hit Blocks": 862,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Planning": {
+      "Shared Hit Blocks": 0,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Planning Time": 0.088,
+    "Triggers": [
+    ],
+    "Execution Time": 103.493
+  }
+]

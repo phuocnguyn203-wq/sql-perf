@@ -1,0 +1,1 @@
+{"cpus":12,"slow":[{"clients":1,"ms":2.020},{"clients":5,"ms":2.258},{"clients":10,"ms":3.692},{"clients":15,"ms":4.994},{"clients":20,"ms":6.464},{"clients":25,"ms":8.321}],"fast":[{"clients":1,"ms":0.201},{"clients":5,"ms":0.240},{"clients":10,"ms":0.335},{"clients":15,"ms":0.458},{"clients":20,"ms":0.621},{"clients":25,"ms":0.758}]}

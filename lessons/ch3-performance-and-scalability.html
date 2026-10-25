@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  <title>Chương 3 · Hiệu năng và khả năng mở rộng</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Patrick+Hand&family=IBM+Plex+Mono:wght@400;600&display=swap"> <!-- taste-skill-ignore: mono chỉ cho code SQL -->
+  <link rel="stylesheet" href="../styles/tokens.css">
+  <link rel="stylesheet" href="../styles/base.css">
+</head>
+<body class="read">
+<a class="skip" href="#noi-dung">Bỏ qua tới nội dung</a>
+<div class="progress" hidden aria-hidden="true"></div>
+<nav class="bar" id="top" aria-label="Chính">
+  <a class="mark" href="../index.html"><span class="sq"></span>SQL Performance, trực quan</a>
+  <ul><li><a href="ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="ch2-the-where-clause.html">Chương 2</a></li><li><a href="ch3-performance-and-scalability.html" aria-current="page">Chương 3</a></li><li><a href="ch4-the-join-operation.html">Chương 4</a></li><li class="opt"><a href="../index.html#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li></ul>
+</nav>
+<div class="page" id="noi-dung">
+
+  <header class="chapter-head wide reveal">
+    <div>
+    <h1>Hiệu năng và khả năng mở rộng</h1>
+    <p class="sub">Một query nhanh trên máy phát triển có thể chậm hẳn trên production, khi dữ liệu và tải tăng lên.<br>Chương này đo điều đó, và cho thấy vì sao thêm phần cứng thường không giúp được.</p>
+    </div>
+  </header>
+
+  <noscript><p class="sub">Các hình cần JavaScript.</p></noscript>
+
+  <div class="step reveal">
+    <h3>Scalability có hai nghĩa</h3>
+    <p>Bài này đi theo chương 3 của cuốn <i>SQL Performance Explained</i> (Markus Winand, 2012); chữ "sách" trong bài là cuốn đó. Sách dùng Oracle; mỗi ví dụ ở đây được chạy lại trên PostgreSQL, và chỗ nào PostgreSQL làm khác, bài ghi rõ.</p>
+    <p>Chương này nói về hiệu năng và khả năng mở rộng (<b>scalability</b>) của database. Sách dùng định nghĩa này:</p>
+    <blockquote class="quote">Scalability là khả năng của một hệ thống, mạng hay quy trình xử lý được lượng công việc ngày càng tăng một cách tốt, <em>hoặc</em> khả năng được mở rộng để đáp ứng sự tăng trưởng đó. <span>(Wikipedia)</span></blockquote>
+    <p>Thực ra đây là hai định nghĩa. Định nghĩa thứ nhất nói về tác động của tải tăng lên một hệ thống. Định nghĩa thứ hai nói về việc mở rộng hệ thống để chịu thêm tải.</p>
+    <p>Định nghĩa thứ hai phổ biến hơn nhiều. Hễ ai nói tới scalability thì gần như luôn là chuyện thêm phần cứng: scale-up, scale-out, rồi các từ thời thượng như web-scale. Nói rộng hơn, scalability là tác động của các thay đổi trong môi trường lên hiệu năng. Phần cứng chỉ là một tham số có thể đổi. Chương này xét cả các tham số khác: lượng dữ liệu và tải của hệ thống.</p>
+    <nav class="toc" aria-label="Các mục của chương">
+      <ol>
+        <li><a href="#volume">Performance Impacts of Data Volume</a></li>
+        <li><a href="#load">Performance Impacts of System Load</a></li>
+        <li><a href="#throughput">Response Time and Throughput</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <!-- ===================== Data Volume ===================== -->
+  <section id="volume">
+    <div class="reveal">
+      <h2>Performance Impacts of Data Volume</h2>
+      <p class="sub">Dữ liệu tăng thì query chậm đi, ai cũng biết. Câu hỏi là chậm đi bao nhiêu khi dữ liệu gấp đôi, và làm sao giảm tỉ lệ đó.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Một query, hai index</h3>
+      <p>Lượng dữ liệu trong database ảnh hưởng lớn tới hiệu năng. Thường thì ai cũng chấp nhận query chậm đi khi dữ liệu nhiều thêm. Nhưng dữ liệu gấp đôi thì hiệu năng bị ảnh hưởng bao nhiêu? Và làm sao cải thiện tỉ lệ đó? Đó là các câu hỏi then chốt khi bàn về scalability của database.</p>
+      <p>Ví dụ: đo thời gian phản hồi của query sau với hai index khác nhau. Tạm thời chưa nói định nghĩa của hai index; chúng sẽ lộ ra dần trong lúc phân tích.</p>
+      <pre class="sql"><code>SELECT count(*)
+  FROM scale_data
+ WHERE section = ?
+   AND id2     = ?;</code></pre>
+      <p>Column <code>section</code> có vai trò đặc biệt: nó điều khiển lượng dữ liệu. <code>section</code> càng lớn, query chọn càng nhiều row. Table <code>scale_data</code> ở đây dựng theo cách đó trên PostgreSQL: section <i>s</i> có <i>s</i> × 1.000 row, từ section 1 (<span data-fact="v:rows_section_1">1.000</span> row) tới section 100 (<span data-fact="v:rows_section_100">100.000</span> row), tổng cộng <span data-fact="v:rows">5.050.000</span> row; <code>id2</code> là số ngẫu nhiên từ 1 tới 100. Các lần đo dùng <code>id2 = 42</code>. Hình 3.1 là thời gian phản hồi với một section nhỏ:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 3.1</span><h4>So sánh hiệu năng</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="small"></div>
+        <figcaption>Section 1. Trung vị của 5 lần chạy, theo <code>EXPLAIN ANALYZE</code>.</figcaption>
+      </figure>
+      <p>Hai cách index chênh nhau đáng kể. Nhưng cả hai đều rất nhanh, nên kể cả query chậm hơn chắc cũng đủ nhanh trong đa số trường hợp. Có điều, biểu đồ hiệu năng này chỉ có một điểm đo. Bàn về scalability là xem hiệu năng thay đổi thế nào khi các tham số môi trường thay đổi, ví dụ lượng dữ liệu.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Scalability cho thấy hiệu năng phụ thuộc vào các yếu tố như lượng dữ liệu. Một giá trị hiệu năng chỉ là một điểm trên biểu đồ scalability.
+      </aside>
+      <p>Hình 3.2 là thời gian phản hồi theo số section, tức theo lượng dữ liệu tăng dần:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 3.2</span><h4>Scalability theo lượng dữ liệu</h4><span class="tag real">Đo thực tế</span></div>
+        <svg class="sk" data-chart="volume" role="img"></svg>
+        <figcaption>Dữ liệu tăng gấp 100 lần: query dùng index chậm chậm đi khoảng <span data-fact="v:slowx">30</span> lần, query dùng index nhanh chậm đi khoảng <span data-fact="v:fastx">14</span> lần nhưng vẫn dưới <span data-fact="v:fast100">0,14</span> ms.</figcaption>
+      </figure>
+      <p>Cả hai index đều có thời gian phản hồi tăng dần. Ở bên phải biểu đồ, khi dữ liệu gấp 100 lần, query dùng index chậm mất <span data-fact="v:slow100">1,89</span> ms, gấp khoảng <span data-fact="v:slowx">30</span> lần ban đầu. Query dùng index nhanh mất <span data-fact="v:fast100">0,14</span> ms. Trong sách (đo trên Oracle, với table lớn hơn nhiều), query nhanh chậm đi hơn gấp đôi, còn query chậm chậm đi 20 lần, lên hơn một giây. Con số tuyệt đối trên máy này nhỏ hơn nhiều, vì table nhỏ hơn và nằm gọn trong bộ nhớ, nhưng hình dạng hai đường thì như nhau.</p>
+      <p>Thời gian phản hồi của một query SQL phụ thuộc nhiều yếu tố; lượng dữ liệu là một trong số đó. Query đủ nhanh trong điều kiện thử nghiệm không có nghĩa nó sẽ đủ nhanh trên production. Nhất là khi môi trường phát triển chỉ có một phần nhỏ dữ liệu của production.</p>
+      <p>Query chậm đi khi dữ liệu tăng thì không có gì lạ. Nhưng khoảng cách rõ rệt giữa hai index thì hơi bất ngờ. Vì sao tốc độ tăng lại khác nhau như vậy?</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Plan gần như giống hệt, lý do nằm ở predicate information</h3>
+      <p>So hai execution plan thì lẽ ra dễ tìm ra lý do. Sách đưa hai plan Oracle, ban đầu bỏ phần predicate information:</p>
+      <pre class="sql"><code>| Id | Operation         | Name       | Rows  | Cost |
+|  0 | SELECT STATEMENT  |            |     1 |  972 |
+|  1 |  SORT AGGREGATE   |            |     1 |      |
+|* 2 |   INDEX RANGE SCAN| SCALE_SLOW |  3000 |  972 |
+
+| Id | Operation         | Name       | Rows  | Cost |
+|  0 | SELECT STATEMENT  |            |     1 |   13 |
+|  1 |  SORT AGGREGATE   |            |     1 |      |
+|* 2 |   INDEX RANGE SCAN| SCALE_FAST |  3000 |   13 |</code></pre>
+      <p>Hai plan gần như giống hệt nhau, chỉ khác index được dùng. Cost có phản ánh chênh lệch tốc độ, nhưng lý do thì không thấy trong plan.</p>
+      <p>Có vẻ như đây lại là chuyện "index chậm": query chậm dù có dùng index. Nhưng ta không còn tin lời đồn "index bị hỏng" nữa. Ta nhớ hai nguyên liệu làm một lần tra index chậm (chương 1): (1) truy cập table, và (2) scan một đoạn index rộng.</p>
+      <p>Không plan nào có bước <code>TABLE ACCESS BY INDEX ROWID</code>, nên một plan hẳn phải scan đoạn index rộng hơn plan kia. Vậy plan cho thấy đoạn index bị scan ở đâu? Tất nhiên là ở predicate information.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Chú ý tới predicate information.
+      </aside>
+      <p>Predicate information không phải chi tiết thừa có thể bỏ như ở trên. Plan thiếu predicate information là plan không đầy đủ, và vì thế không thấy được lý do chênh lệch hiệu năng. Plan đầy đủ của Oracle cho thấy ngay:</p>
+      <pre class="sql"><code>SCALE_SLOW:  2 - access("SECTION"=TO_NUMBER(:A))
+                 filter("ID2"=TO_NUMBER(:B))
+
+SCALE_FAST:  2 - access("SECTION"=TO_NUMBER(:A) AND "ID2"=TO_NUMBER(:B))</code></pre>
+      <p>Chênh lệch giờ đã rõ: với index <code>scale_slow</code>, chỉ điều kiện trên <code>section</code> là access predicate. Database đọc mọi row của section và bỏ những row không khớp filter predicate trên <code>id2</code>. Thời gian phản hồi tăng theo số row trong section. Với index <code>scale_fast</code>, database dùng mọi điều kiện làm access predicate. Thời gian phản hồi tăng theo số row được chọn.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Filter predicate giống bom chưa nổ. Chúng có thể nổ bất cứ lúc nào.
+      </aside>
+      <p>Đây là hai plan PostgreSQL cho section lớn nhất (section 100):</p>
+      <div class="planpair">
+        <figure class="planfig">
+          <div class="fig-head"><h4>scale_slow</h4><span class="tag real">Đo thực tế</span></div>
+          <div data-plan="plan-slow"></div>
+        </figure>
+        <figure class="planfig">
+          <div class="fig-head"><h4>scale_fast</h4><span class="tag real">Đo thực tế</span></div>
+          <div data-plan="plan-fast"></div>
+        </figure>
+      </div>
+      <p>Ở PostgreSQL, việc nhận ra còn khó hơn. Cả hai plan đều ghi đúng một dòng <code>index cond</code> như nhau, chứa cả hai điều kiện. PostgreSQL không tách access predicate với index filter predicate cho index B-tree. Dấu hiệu duy nhất là số block: <span data-fact="p:plan-slow:blocks">387</span> so với <span data-fact="p:plan-fast:blocks">8</span>. <code>scale_slow</code> phải đọc hết <span data-fact="v:rows_section_100">100.000</span> entry của section 100 để đếm ra <span data-fact="v:matches_section_100">966</span> row khớp.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Dựng lại định nghĩa index từ plan</h3>
+      <p>Mảnh cuối cùng của câu đố là định nghĩa hai index. Có dựng lại được từ plan không?</p>
+      <p>Định nghĩa của <code>scale_slow</code> phải bắt đầu bằng <code>section</code>, nếu không thì điều kiện này không thể là access predicate. Điều kiện trên <code>id2</code> không phải access predicate, nên <code>id2</code> không thể đứng ngay sau <code>section</code>. Vậy <code>scale_slow</code> phải có ít nhất ba column, với <code>section</code> đứng đầu và <code>id2</code> không đứng thứ hai. Đúng như định nghĩa dùng trong thí nghiệm:</p>
+      <pre class="sql"><code>CREATE INDEX scale_slow ON scale_data (section, id1, id2);</code></pre>
+      <p>Database không thể dùng <code>id2</code> làm access predicate vì column <code>id1</code> đứng ở vị trí thứ hai.</p>
+      <p>Định nghĩa của <code>scale_fast</code> phải có <code>section</code> và <code>id2</code> ở hai vị trí đầu, vì cả hai đều là access predicate; không nói được thứ tự giữa chúng. Index dùng trong thí nghiệm bắt đầu bằng <code>section</code> và có thêm column <code>id1</code> ở vị trí thứ ba:</p>
+      <pre class="sql"><code>CREATE INDEX scale_fast ON scale_data (section, id2, id1);</code></pre>
+      <p>Column <code>id1</code> được thêm vào chỉ để index này có cùng kích thước với <code>scale_slow</code>; nếu không, có thể nghĩ rằng kích thước mới là nguyên nhân của chênh lệch.</p>
+    </div>
+  </section>
+
+  <!-- ===================== System Load ===================== -->
+  <section id="load">
+    <div class="reveal">
+      <h2>Performance Impacts of System Load</h2>
+      <p class="sub">Optimizer dùng một index vì nó hiệu quả hơn full table scan, không phải vì nó là index "đúng". Khi tải tăng, filter predicate bị giấu trong plan lộ ra thành thời gian chờ.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Predicate information thường bị giấu</h3>
+      <p>Việc cân nhắc định nghĩa index nhiều column thường dừng lại ngay khi index được dùng cho query đang tối ưu. Nhưng optimizer không dùng một index vì nó là index "đúng" cho query, mà vì nó hiệu quả hơn full table scan. Điều đó không có nghĩa nó là index tối ưu cho query.</p>
+      <p>Ví dụ trước cho thấy khó nhận ra thứ tự column sai trong execution plan thế nào. Rất thường thì predicate information bị giấu kỹ, phải chủ động đi tìm mới kiểm tra được index có được dùng tối ưu hay không. SQL Server Management Studio, chẳng hạn, chỉ hiện predicate information dưới dạng tooltip khi rê chuột lên thao tác index (Hình 3.3 trong sách là ảnh chụp tooltip đó). Lấy predicate information từ plan của MySQL hay PostgreSQL còn vất vả hơn, như hai plan PostgreSQL ở trên đã cho thấy.</p>
+      <p>Predicate information trông không quan trọng trong plan, nhưng nó ảnh hưởng lớn tới hiệu năng, nhất là khi hệ thống lớn lên. Nhớ rằng không chỉ lượng dữ liệu tăng, mà tần suất truy cập cũng tăng. Đây là một tham số nữa của hàm scalability.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Thời gian phản hồi theo số query đồng thời</h3>
+      <p>Hình 3.4 vẽ thời gian phản hồi theo tần suất truy cập; lượng dữ liệu giữ nguyên. Vẫn là query như trên, luôn dùng section có nhiều dữ liệu nhất. Nghĩa là điểm cuối của Hình 3.2 ứng với điểm đầu của biểu đồ này. Ở đây tải được tạo bằng <code>pgbench</code> (đi kèm PostgreSQL): chạy liên tục query đó từ 1 tới 25 kết nối cùng lúc, mỗi mức 8 giây, trên máy có <span data-fact="l:cpus">12</span> CPU.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 3.4</span><h4>Scalability theo tải hệ thống</h4><span class="tag real">Đo thực tế</span></div>
+        <svg class="sk" data-chart="load" role="img"></svg>
+        <figcaption>Section 100. Thời gian phản hồi trung bình theo <code>pgbench</code> (latency average).</figcaption>
+      </figure>
+      <p>Đường nét đứt là thời gian phản hồi khi dùng <code>scale_slow</code>. Trong sách, nó tăng tới 32 giây khi có 25 query chạy cùng lúc, gấp 30 lần so với lúc không có tải nền, như trong môi trường phát triển. Trên máy này, nó tăng từ <span data-fact="l:slow1">2,02</span> ms lên <span data-fact="l:slow25">8,32</span> ms. Kể cả khi môi trường phát triển có bản sao đầy đủ của database production, tải nền vẫn có thể làm query chạy chậm hơn nhiều trên production.</p>
+      <p>Đường liền là thời gian phản hồi khi dùng <code>scale_fast</code>, index không có filter predicate. Trong sách nó luôn dưới hai giây kể cả với 25 query đồng thời. Ở đây nó tăng từ <span data-fact="l:fast1">0,2</span> ms lên <span data-fact="l:fast25">0,76</span> ms. Trên máy nhiều CPU này, cả hai đường cùng chậm đi khoảng bốn lần khi tải tăng. Nhưng mỗi query chậm phải làm nhiều việc gấp khoảng mười lần, nên phần thời gian bị cộng thêm cũng gấp khoảng mười lần: <span data-fact="l:slowAdd">6,3</span> ms so với <span data-fact="l:fastAdd">0,56</span> ms.</p>
+      <aside class="box">
+        <b class="k">Lưu ý</b>
+        Đọc kỹ execution plan cho nhiều tin cậy hơn một benchmark hời hợt. Một stress test đầy đủ vẫn đáng làm, nhưng tốn kém.
+      </aside>
+      <p>Thời gian phản hồi đáng ngờ thường bị xem nhẹ trong lúc phát triển, phần lớn vì ta trông đợi "phần cứng production mạnh hơn" sẽ chạy nhanh hơn. Thực tế thường ngược lại, vì hạ tầng production phức tạp hơn và cộng dồn những độ trễ không có trong môi trường phát triển. Kể cả khi thử trên hạ tầng giống production, tải nền vẫn làm thời gian phản hồi khác đi. Mục tiếp theo cho thấy nói chung không nên trông đợi phần cứng "lớn hơn" sẽ trả lời nhanh hơn.</p>
+    </div>
+  </section>
+
+  <!-- ===================== Response Time and Throughput ===================== -->
+  <section id="throughput">
+    <div class="reveal">
+      <h2>Response Time and Throughput</h2>
+      <p class="sub">Phần cứng lớn hơn không nhanh hơn, nhưng thường chịu được nhiều tải hơn. Muốn query nhanh hơn thì cần index đúng.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Đường cao tốc rộng hơn, không phải xe nhanh hơn</h3>
+      <p>Phần cứng lớn hơn không phải lúc nào cũng nhanh hơn, nhưng thường chịu được nhiều tải hơn. Nó giống một đường cao tốc rộng hơn chứ không giống một chiếc xe nhanh hơn: thêm làn đường không cho phép bạn chạy nhanh hơn. Vì vậy thêm phần cứng không tự động làm query SQL chậm trở nên nhanh.</p>
+      <p>Ta không còn ở thập niên 1990. Hồi đó sức mạnh của CPU một nhân tăng rất nhanh, và phần lớn vấn đề thời gian phản hồi tự biến mất trên phần cứng mới, chỉ nhờ CPU tốt hơn. Giống như mẫu xe mới năm nào cũng nhanh gấp đôi mẫu cũ. Nhưng sức mạnh CPU một nhân chạm trần trong những năm đầu thế kỷ 21 và gần như không tăng thêm. Để tiếp tục làm CPU mạnh hơn, các hãng chuyển sang nhiều nhân. Nhiều nhân cho phép chạy nhiều việc cùng lúc, nhưng không làm nhanh hơn nếu chỉ có một việc. Hiệu năng có nhiều hơn một chiều.</p>
+      <p>Mở rộng theo chiều ngang (thêm server) cũng có giới hạn tương tự. Nhiều server xử lý được nhiều request hơn, nhưng không làm một query cụ thể trả lời nhanh hơn. Muốn tìm kiếm nhanh hơn thì cần một search tree hiệu quả, kể cả trong hệ thống phi quan hệ như CouchDB hay MongoDB.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Index đúng là cách tốt nhất để giảm thời gian phản hồi của query, trong cả database SQL lẫn hệ thống phi quan hệ.
+      </aside>
+      <p>Index đúng nhằm tận dụng trọn vẹn khả năng mở rộng theo logarit của B-tree. Tiếc là việc index thường làm rất ẩu. Biểu đồ ở mục Performance Impacts of Data Volume cho thấy rõ hậu quả:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 3.5</span><h4>Thời gian phản hồi theo lượng dữ liệu</h4><span class="tag real">Đo thực tế</span></div>
+        <svg class="sk" data-chart="volume2" role="img"></svg>
+        <figcaption>Cùng số đo với Hình 3.2: index ẩu so với index đúng.</figcaption>
+      </figure>
+      <p>Chênh lệch thời gian phản hồi giữa một index ẩu và một index đúng là rất lớn. Khó mà bù lại bằng cách thêm phần cứng. Kể cả khi cắt được thời gian phản hồi bằng phần cứng, vẫn đáng hỏi đó có phải giải pháp tốt nhất không.</p>
+      <p>Nhiều hệ thống gọi là NoSQL vẫn tuyên bố giải quyết mọi vấn đề hiệu năng bằng horizontal scalability. Nhưng khả năng mở rộng đó phần lớn chỉ áp dụng cho thao tác ghi, và đạt được nhờ mô hình eventual consistency. Database SQL dùng mô hình consistency chặt chẽ, làm chậm thao tác ghi, nhưng không nhất thiết có nghĩa throughput kém.</p>
+      <aside class="box">
+        <b class="k">Eventual consistency và định lý CAP</b>
+        Giữ consistency chặt chẽ trong một hệ thống phân tán đòi hỏi phối hợp đồng bộ mọi thao tác ghi giữa các node. Điều này có hai tác dụng phụ khó chịu: (1) thêm độ trễ và tăng thời gian phản hồi; (2) giảm availability, vì nhiều node phải cùng sẵn sàng mới hoàn tất được một lần ghi. Database SQL phân tán hay bị nhầm với cluster dùng chung storage hoặc master-slave replication. Thực ra nó giống một web shop tích hợp với hệ thống ERP, thường là hai sản phẩm của hai hãng. Consistency giữa hai hệ thống thường đạt được bằng giao thức two-phase commit (2PC), cho giao dịch toàn cục kiểu "được cả hoặc không được gì" trên nhiều database. Giao dịch toàn cục chỉ hoàn tất khi mọi bên tham gia đều sẵn sàng, nên làm giảm availability. Hệ thống càng nhiều node, consistency chặt chẽ càng khó; với hơn vài node thì gần như không thể. Bỏ consistency chặt chẽ thì giải được vấn đề availability và thời gian phản hồi: hoàn tất thao tác ghi trên một phần các node, rồi khôi phục consistency toàn cục sau. Chỉ còn một vấn đề: không thể ngăn xung đột khi hai node nhận hai thay đổi mâu thuẫn. Consistency cuối cùng đạt được bằng cách xử lý xung đột, chứ không phải ngăn chúng. Ở đây consistency nghĩa là mọi node có cùng dữ liệu, không nhất thiết là dữ liệu đúng hay tốt nhất. Định lý CAP của Brewer mô tả quan hệ chung giữa Consistency, Availability và Partition tolerance.
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Độ trễ cộng dồn: mạng và đĩa</h3>
+      <p>Thêm phần cứng thường không cải thiện thời gian phản hồi. Thực ra nó còn có thể làm hệ thống chậm hơn, vì độ phức tạp tăng thêm sẽ cộng dồn thêm độ trễ. Độ trễ mạng không thành vấn đề nếu ứng dụng và database chạy trên cùng một máy, nhưng cách bố trí này hiếm gặp trên production, nơi database và ứng dụng thường nằm trên phần cứng riêng. Chính sách bảo mật thậm chí có thể đòi một firewall giữa application server và database, thường làm độ trễ mạng tăng gấp đôi. Hạ tầng càng phức tạp, độ trễ cộng dồn càng nhiều, và trả lời càng chậm. Hiệu ứng này thường dẫn tới một quan sát trái trực giác: phần cứng production đắt tiền lại chậm hơn chiếc PC rẻ dùng để phát triển.</p>
+      <p>Một độ trễ rất quan trọng khác là thời gian seek của đĩa. Ổ cứng quay (HDD) cần khá lâu để đưa bộ phận cơ khí tới đúng chỗ đọc dữ liệu, thường vài mili giây. Độ trễ này xảy ra bốn lần khi duyệt một B-tree bốn tầng, tổng cộng vài chục mili giây. Với máy tính đó là nửa đời người, nhưng vẫn dưới ngưỡng cảm nhận của con người, nếu chỉ xảy ra một lần. Có điều, một câu SQL rất dễ kích hoạt hàng trăm, thậm chí hàng nghìn lần seek, nhất là khi kết hợp nhiều table bằng join. Dù cache giảm vấn đề đi rất nhiều và công nghệ mới như SSD giảm thời gian seek một bậc độ lớn, join vẫn thường bị nghi là chậm. Vì vậy chương sau giải thích cách dùng index để join table hiệu quả.</p>
+      <aside class="box">
+        <b class="k">SSD và cache</b>
+        SSD là công nghệ lưu trữ không có bộ phận chuyển động. Thời gian seek của SSD thường nhanh hơn HDD một bậc độ lớn. (Sách viết năm 2012, khi SSD còn đắt và chưa phổ biến cho database; ngày nay SSD đã là mặc định.) Database cũng cache dữ liệu hay dùng trong bộ nhớ chính. Điều này đặc biệt có ích cho dữ liệu cần ở mọi lần tra index, ví dụ root node của index. Database có thể cache trọn các index hay dùng, để một lần tra index không cần tới một lần seek nào. Các số đo trong trang này cũng vậy: dữ liệu đã nằm trong bộ nhớ, nên thời gian chỉ là mili giây.
+      </aside>
+    </div>
+  </section>
+</div>
+
+<footer class="foot reveal">
+  <div class="foot-mark" role="img" aria-label="INDEX"><span>I</span><span>N</span><span>D</span><span>E</span><span>X</span></div>
+  <div class="foot-cols">
+    <div><h3>Chương</h3><ul><li><a href="ch1-anatomy-of-an-index.html">Giải phẫu một index</a></li><li><a href="ch2-the-where-clause.html">Mệnh đề WHERE</a></li><li><a href="ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a></li><li><a href="ch4-the-join-operation.html">Phép JOIN</a></li></ul></div>
+    <div><h3>Thí nghiệm</h3><ul><li><a href="../sql/ch3-benchmarks.sql">ch3-benchmarks.sql</a></li><li><a href="../sql/ch3-load.sh">ch3-load.sh</a></li></ul></div>
+    <div><h3>Nguồn</h3><ul><li><a href="https://sql-performance-explained.com/">SQL Performance Explained</a></li><li><a href="https://use-the-index-luke.com/">Use The Index, Luke</a></li></ul></div>
+    <div><p>Số đo chạy trên PostgreSQL thật, table scale_data 5.050.000 row sinh với seed cố định. Thời gian phụ thuộc máy đo; hình dạng các đường mới là điều đáng so.</p></div>
+  </div>
+  <div class="foot-last"><span>Nội dung tóm tắt từ sách của Markus Winand.</span><a class="top" href="#top">Lên đầu trang</a></div>
+</footer>
+
+<script src="../vendor/framer-motion-dom.js"></script>
+<script src="../vendor/rough.js"></script>
+<script type="module">import { site } from '../scripts/motion.js'; site();</script>
+<script type="module">
+  import { planTable, bars, blocks, fmt } from '../scripts/visualizations/plans.js';
+  import { lineChart } from '../scripts/visualizations/line-chart.js';
+
+  const get = f => fetch(`../data/${f}`).then(r => (r.ok ? r.json() : Promise.reject(new Error(`${f}: ${r.status}`))));
+  const ms = n => `${n.toLocaleString('vi-VN', { maximumFractionDigits: n < 0.1 ? 3 : 2 })} ms`;
+  const num = n => n.toLocaleString('vi-VN', { maximumFractionDigits: 2 });
+
+  try {
+    const [volume, load, slowPlan, fastPlan] = await Promise.all(
+      ['ch3/volume.json', 'ch3/load.json', 'ch3/plan-slow.json', 'ch3/plan-fast.json'].map(get));
+    const plans = { 'plan-slow': slowPlan[0], 'plan-fast': fastPlan[0] };
+    for (const el of document.querySelectorAll('[data-plan]')) el.innerHTML = planTable(plans[el.dataset.plan]);
+
+    const at = (k, s) => volume[k][s - 1].ms;
+    const lAt = (k, c) => load[k].find(r => r.clients === c).ms;
+    const facts = {
+      'v:rows': fmt(volume.rows), 'v:rows_section_1': fmt(volume.rows_section_1),
+      'v:rows_section_100': fmt(volume.rows_section_100), 'v:matches_section_100': fmt(volume.matches_section_100),
+      'v:slow100': num(at('slow', 100)), 'v:fast100': num(at('fast', 100)),
+      'v:slowx': Math.round(at('slow', 100) / at('slow', 1)), 'v:fastx': Math.round(at('fast', 100) / at('fast', 1)),
+      'p:plan-slow:blocks': fmt(blocks(slowPlan[0].Plan)), 'p:plan-fast:blocks': fmt(blocks(fastPlan[0].Plan)),
+      'l:cpus': load.cpus, 'l:slow1': num(lAt('slow', 1)), 'l:slow25': num(lAt('slow', 25)),
+      'l:fast1': num(lAt('fast', 1)), 'l:fast25': num(lAt('fast', 25)),
+      'l:slowAdd': num(lAt('slow', 25) - lAt('slow', 1)), 'l:fastAdd': num(lAt('fast', 25) - lAt('fast', 1)),
+    };
+    for (const el of document.querySelectorAll('[data-fact]')) el.textContent = facts[el.dataset.fact] ?? el.textContent;
+
+    bars(document.querySelector('[data-bars="small"]'), [
+      { label: 'scale_slow', value: at('slow', 1), text: ms(at('slow', 1)), hot: true },
+      { label: 'scale_fast', value: at('fast', 1), text: ms(at('fast', 1)) },
+    ]);
+    // Như sách: index chậm là đường nét đứt, index nhanh là đường liền.
+    const volumeChart = svg => lineChart(svg, {
+      xLabel: 'Lượng dữ liệu [section]', yLabel: 'Thời gian [ms]', xTicks: [0, 20, 40, 60, 80, 100],
+      series: [
+        { label: 'slow', hot: true, points: volume.slow.filter(r => r.section % 5 === 0 || r.section === 1).map(r => [r.section, r.ms]) },
+        { label: 'fast', points: volume.fast.filter(r => r.section % 5 === 0 || r.section === 1).map(r => [r.section, r.ms]) },
+      ],
+    });
+    volumeChart(document.querySelector('[data-chart="volume"]'));
+    volumeChart(document.querySelector('[data-chart="volume2"]'));
+    lineChart(document.querySelector('[data-chart="load"]'), {
+      xLabel: 'Tải [số query đồng thời]', yLabel: 'Thời gian [ms]', xTicks: [0, 5, 10, 15, 20, 25],
+      series: [
+        { label: 'slow', hot: true, points: load.slow.map(r => [r.clients, r.ms]) },
+        { label: 'fast', points: load.fast.map(r => [r.clients, r.ms]) },
+      ],
+    });
+  } catch (e) {
+    for (const el of document.querySelectorAll('[data-plan], [data-bars], [data-chart]')) {
+      el.replaceWith(Object.assign(document.createElement('p'), { textContent: `Không tải được số liệu (${e.message}). Chạy npm start rồi mở qua http://localhost:8000.` }));
+    }
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+  <title>Chương 2 · Mệnh đề WHERE</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Patrick+Hand&family=IBM+Plex+Mono:wght@400;600&display=swap"> <!-- taste-skill-ignore: mono chỉ cho code SQL -->
+  <link rel="stylesheet" href="../styles/tokens.css">
+  <link rel="stylesheet" href="../styles/base.css">
+</head>
+<body class="read">
+<a class="skip" href="#noi-dung">Bỏ qua tới nội dung</a>
+<div class="progress" hidden aria-hidden="true"></div>
+<nav class="bar" id="top" aria-label="Chính">
+  <a class="mark" href="../index.html"><span class="sq"></span>SQL Performance, trực quan</a>
+  <ul><li><a href="ch1-anatomy-of-an-index.html">Chương 1</a></li><li><a href="ch2-the-where-clause.html" aria-current="page">Chương 2</a></li><li><a href="ch3-performance-and-scalability.html">Chương 3</a></li><li><a href="ch4-the-join-operation.html">Chương 4</a></li><li class="opt"><a href="../index.html#chuong">Mục lục</a></li><li class="opt"><button type="button" class="theme-toggle">Nền tối</button></li></ul>
+</nav>
+<div class="page" id="noi-dung">
+
+  <header class="chapter-head wide reveal">
+    <div>
+    <h1>Mệnh đề WHERE</h1>
+    <p class="sub">WHERE là điều kiện tìm kiếm của câu SQL, nên nó nằm đúng ở việc chính của index: tìm dữ liệu nhanh.<br>Một WHERE viết ẩu bắt database scan một phần lớn index. Đó là nguyên liệu đầu tiên của một query chậm.</p>
+    </div>
+    <figure class="photo"><img src="../assets/national-telephone-directory-from-october-1896.webp" alt="Bìa cuốn danh bạ điện thoại quốc gia Mỹ, tháng 10 năm 1896" width="1200" height="1600"><figcaption>Danh bạ xếp theo họ trước, rồi mới tới tên: một index hai column.</figcaption></figure>
+  </header>
+
+  <noscript><p class="sub">Các hình và plan cần JavaScript.</p></noscript>
+
+  <div class="step reveal">
+    <p>Chương 1 giải thích cấu trúc của index và vì sao index có thể chậm. Chương này đi tiếp: các toán tử khác nhau ảnh hưởng tới việc dùng index thế nào, và làm sao để một index dùng được cho càng nhiều query càng tốt. Mục cuối là các anti-pattern hay gặp và cách viết thay thế.</p>
+    <p>Bài này đi theo chương 2 của cuốn <i>SQL Performance Explained</i> (Markus Winand, 2012); chữ "sách" trong bài là cuốn đó. Sách dùng Oracle. Ở đây mỗi ví dụ của sách được chạy lại trên PostgreSQL <span data-fact="version">18</span>, với cùng câu SQL và một table dựng theo đúng kịch bản của sách. Chỗ nào PostgreSQL làm khác Oracle, bài ghi rõ.</p>
+    <nav class="toc" aria-label="Các mục của chương">
+      <ol>
+        <li><a href="#equality">The Equality Operator</a></li>
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#parameterized">Parameterized Queries</a></li>
+        <li><a href="#ranges">Searching for Ranges</a></li>
+        <li><a href="#partial">Partial Indexes</a></li>
+        <li><a href="#null">NULL in the Oracle Database</a></li>
+        <li><a href="#obfuscated">Obfuscated Conditions</a></li>
+      </ol>
+    </nav>
+  </div>
+
+  <!-- ===================== The Equality Operator ===================== -->
+  <section id="equality">
+    <div class="reveal">
+      <h2>The Equality Operator</h2>
+      <p class="sub">Toán tử <code>=</code> đơn giản nhất và được dùng nhiều nhất. Vậy mà lỗi index quanh nó vẫn rất phổ biến, nhất là khi WHERE ghép nhiều điều kiện.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Primary Keys: tra theo khóa chỉ cần tree traversal</h3>
+      <p>Bắt đầu với WHERE đơn giản nhất và phổ biến nhất: tra theo primary key. Table của cả chương là <code>employees</code>. Lúc đầu nó chỉ chứa nhân viên của một công ty, <span data-fact="c:sub30">10.000</span> người, và primary key là <code>employee_id</code>:</p>
+      <pre class="sql"><code>CREATE TABLE employees (
+   employee_id   integer      NOT NULL,
+   first_name    varchar(255) NOT NULL,
+   last_name     varchar(255) NOT NULL,
+   date_of_birth date         NOT NULL,
+   phone_number  varchar(255) NOT NULL,
+   CONSTRAINT employees_pk PRIMARY KEY (employee_id)
+);</code></pre>
+      <p>Database tự tạo một index cho primary key. Vậy là có index trên <code>employee_id</code>, dù không có câu <code>CREATE INDEX</code> nào. Query sau dùng primary key để lấy tên một nhân viên:</p>
+      <pre class="sql"><code>SELECT first_name, last_name
+  FROM employees
+ WHERE employee_id = 123;</code></pre>
+      <p>WHERE này không thể khớp nhiều hơn một row, vì primary key bảo đảm <code>employee_id</code> không trùng. Database không cần đi theo leaf node chain; tree traversal là đủ.</p>
+      <p>Để kiểm chứng, ta xem <b>execution plan</b>: bản kê các bước database thực hiện cho một câu SQL. Ở PostgreSQL, lệnh <code>EXPLAIN</code> in ra plan. Trang này dùng <code>EXPLAIN (ANALYZE, BUFFERS)</code>: database chạy câu lệnh thật, rồi ghi thêm số row thật và số block đã đọc cạnh mỗi bước.</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Tra theo primary key</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="pk-lookup"></div>
+      </figure>
+      <p>Plan của Oracle cho cùng query, in trong sách:</p>
+      <pre class="sql"><code>|Id |Operation                   | Name         | Rows | Cost |
+| 0 |SELECT STATEMENT            |              |    1 |    2 |
+| 1 | TABLE ACCESS BY INDEX ROWID| EMPLOYEES    |    1 |    2 |
+|*2 |  INDEX UNIQUE SCAN         | EMPLOYEES_PK |    1 |    1 |
+
+Predicate Information (identified by operation id):
+   2 - access("EMPLOYEE_ID"=123)</code></pre>
+      <p>Dòng 2, <code>INDEX UNIQUE SCAN</code>, là thao tác chỉ duyệt tree. Nó tận dụng trọn vẹn khả năng mở rộng theo logarit của index, nên tìm ra entry rất nhanh, gần như không phụ thuộc kích thước table. PostgreSQL gọi tên khác. Bảng dưới đối chiếu các tên sẽ gặp trong chương này:</p>
+      <figure class="scroll-x">
+        <table class="sk-table map">
+          <thead><tr><th>Sách (Oracle)</th><th>PostgreSQL</th><th>Việc nó làm</th></tr></thead>
+          <tbody>
+            <tr><td><code>INDEX UNIQUE SCAN</code></td><td rowspan="2"><code>Index Scan</code></td><td>Duyệt tree; nếu khớp nhiều entry thì đi tiếp theo leaf node chain</td></tr>
+            <tr><td><code>INDEX RANGE SCAN</code></td><td>Duyệt tree, rồi đi theo leaf node chain</td></tr>
+            <tr><td><code>TABLE ACCESS BY INDEX ROWID</code></td><td><code>Index Scan</code> (cùng một bước)</td><td>Lấy row từ table theo địa chỉ trong index</td></tr>
+            <tr><td><code>TABLE ACCESS FULL</code></td><td><code>Seq Scan</code></td><td>Đọc cả table, kiểm tra từng row</td></tr>
+            <tr><td>access predicate</td><td><code>Index Cond</code></td><td>Điều kiện dùng để đi trong index</td></tr>
+            <tr><td>filter predicate</td><td><code>Filter</code></td><td>Điều kiện kiểm tra sau khi đã đọc row</td></tr>
+          </tbody>
+        </table>
+      </figure>
+      <p>Sau khi tra index, database còn một bước: lấy <code>first_name</code> và <code>last_name</code> từ table. Sách gọi bước này là <code>TABLE ACCESS BY INDEX ROWID</code>; PostgreSQL gộp nó vào <code>Index Scan</code>. Chương 1 đã nói bước này có thể thành nút thắt. Nhưng với một unique scan thì không: nó trả về nhiều nhất một entry, nên vào table nhiều nhất một lần. Plan trên đọc <span data-fact="p:pk-lookup:blocks">3</span> block: vài page index và một block của table.</p>
+      <aside class="box">
+        <b class="k">Primary key không có unique index</b>
+        Primary key không nhất thiết cần unique index; dùng index thường cũng được. Khi đó Oracle dùng <code>INDEX RANGE SCAN</code> thay vì <code>INDEX UNIQUE SCAN</code>, nhưng constraint vẫn giữ khóa không trùng, nên lần tra vẫn chỉ ra nhiều nhất một entry. Một lý do dùng index thường cho primary key là deferrable constraint: database chỉ kiểm tra constraint khi commit transaction, thay vì ngay lúc chạy câu lệnh. Cần nó khi insert vào các table phụ thuộc vòng tròn.
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Concatenated Indexes: thứ tự column quyết định index dùng được cho query nào</h3>
+      <p>Khi khóa gồm nhiều column, database tạo một index trên tất cả các column đó, gọi là <b>concatenated index</b> (còn gọi là multi-column, composite hay combined index). Thứ tự column trong concatenated index ảnh hưởng rất lớn tới việc index dùng được cho query nào, nên phải chọn cẩn thận.</p>
+      <p>Giả sử công ty sáp nhập với một công ty khác. Nhân viên công ty kia được thêm vào <code>employees</code>, và table lớn gấp mười: <span data-fact="c:rows">100.000</span> row. Chỉ có một vấn đề: <code>employee_id</code> của hai công ty trùng nhau. Phải thêm vào khóa một column nữa, <code>subsidiary_id</code>, để khóa không trùng trở lại. Trong dữ liệu ở đây, công ty gốc là subsidiary 30 (<span data-fact="c:sub30">10.000</span> người); công ty mới có <span data-fact="c:subsMinus">90</span> subsidiary khác, mỗi nơi <span data-fact="c:sub20">1.000</span> người.</p>
+      <pre class="sql"><code>ALTER TABLE employees
+  ADD CONSTRAINT employees_pk PRIMARY KEY (employee_id, subsidiary_id);</code></pre>
+      <p>Tìm một nhân viên giờ phải dùng đủ primary key, tức cả <code>subsidiary_id</code>:</p>
+      <pre class="sql"><code>SELECT first_name, last_name
+  FROM employees
+ WHERE employee_id   = 123
+   AND subsidiary_id = 30;</code></pre>
+      <p>Hễ query dùng đủ primary key, database dùng được unique scan, bất kể index có bao nhiêu column. PostgreSQL vẫn chỉ đọc <span data-fact="p:concat-full:blocks">3</span> block. Nhưng nếu chỉ dùng một column của khóa thì sao, ví dụ tìm mọi nhân viên của một subsidiary?</p>
+      <pre class="sql"><code>SELECT first_name, last_name
+  FROM employees
+ WHERE subsidiary_id = 20;</code></pre>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Chỉ có column thứ hai</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="concat-sub"></div>
+      </figure>
+      <p>Plan cho thấy database không dùng index. Nó làm <b>full table scan</b> (<code>Seq Scan</code>): đọc cả table, <span data-fact="p:concat-sub:blocks">957</span> block, và kiểm tra từng row với WHERE, bỏ đi <span data-fact="p:concat-sub:removed">99.000</span> row. Thời gian chạy tăng theo kích thước table: table lớn gấp mười thì full table scan lâu gấp mười. Cái nguy hiểm là nó thường đủ nhanh trên môi trường phát triển nhỏ, rồi gây vấn đề nghiêm trọng trên production.</p>
+      <aside class="box">
+        <b class="k">Full table scan</b>
+        Trong một số trường hợp, full table scan vẫn là cách hiệu quả nhất, nhất là khi lấy một phần lớn table. Một phần vì nó không tốn công tra index. Phần chính là: khi tra index, database đọc từng block một, vì phải xử lý xong block này mới biết block tiếp theo là block nào. Full table scan đằng nào cũng đọc cả table, nên đọc được nhiều block một lượt (multi block read). Đọc nhiều dữ liệu hơn, nhưng có thể ít lần đọc hơn.
+      </aside>
+      <p>Database không dùng index vì nó không thể dùng tùy ý một column bất kỳ của concatenated index. Nhìn kỹ cấu trúc index sẽ thấy rõ. Concatenated index cũng là một B-tree như mọi index khác: dữ liệu được giữ trong một danh sách đã sắp xếp. Database sắp entry theo từng column, đúng thứ tự trong định nghĩa index. Column đầu là tiêu chí sắp chính. Column thứ hai chỉ quyết định thứ tự khi hai entry có cùng giá trị ở column đầu, và cứ thế.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Concatenated index là một index trên nhiều column.
+      </aside>
+      <p>Thứ tự của index hai column giống thứ tự của danh bạ điện thoại: xếp theo họ trước, rồi theo tên. Nên index hai column không hỗ trợ tìm chỉ theo column thứ hai; giống như tìm trong danh bạ chỉ theo tên.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 2.1</span><h4>Concatenated index</h4><span class="tag">Hình trong sách</span></div>
+        <svg class="sk" data-fig="21" role="img" aria-label="Một đoạn index (employee_id, subsidiary_id): root, branch và hai leaf node. Hai entry của subsidiary 20 nằm ở hai leaf node khác nhau; root và branch không có entry nào của subsidiary 20."></svg>
+        <figcaption>Entry của subsidiary 20 không nằm cạnh nhau, và tree không có entry nào cho subsidiary 20. Tree vô dụng với query này.</figcaption>
+      </figure>
+      <p>Đoạn index ở Hình 2.1 cho thấy các entry của subsidiary 20 không được lưu cạnh nhau. Nó cũng cho thấy trong tree không có entry nào với <code>subsidiary_id = 20</code>, dù ở leaf node thì có. Vì vậy tree vô dụng với query này.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Hình dung index giúp hiểu nó hỗ trợ query nào. Có thể hỏi database để lấy các entry theo đúng thứ tự index:
+        <pre class="sql"><code>SELECT &lt;INDEX COLUMN LIST&gt;
+  FROM &lt;TABLE&gt;
+ ORDER BY &lt;INDEX COLUMN LIST&gt;
+ FETCH FIRST 100 ROWS ONLY;</code></pre>
+        Điền định nghĩa index và tên table vào là có một mẫu của index. Tự hỏi: các row cần tìm có nằm gom ở một chỗ không? Nếu không, tree không thể giúp tìm ra chỗ đó.
+      </aside>
+      <p>Tất nhiên có thể thêm một index trên <code>subsidiary_id</code>. Nhưng có cách tốt hơn, ít nhất là khi không ai cần tìm chỉ theo <code>employee_id</code>. Column đầu tiên của index luôn dùng được để tìm. Lại như danh bạ: không cần biết tên vẫn tìm được theo họ. Mẹo là đảo thứ tự column để <code>subsidiary_id</code> đứng đầu:</p>
+      <pre class="sql"><code>ALTER TABLE employees
+  ADD CONSTRAINT employees_pk PRIMARY KEY (subsidiary_id, employee_id);</code></pre>
+      <p>Hai column cộng lại vẫn không trùng, nên query theo đủ khóa vẫn dùng unique scan (<span data-fact="p:concat-rev-full:blocks">3</span> block). Nhưng thứ tự entry đã khác hẳn: <code>subsidiary_id</code> thành tiêu chí sắp chính. Mọi entry của một subsidiary nằm liền nhau trong index, nên database dùng được B-tree để tìm tới chỗ đó.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Điều quan trọng nhất khi định nghĩa concatenated index là chọn thứ tự column sao cho index dùng được càng thường xuyên càng tốt.
+      </aside>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Chỉ subsidiary_id, sau khi đảo thứ tự column</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="concat-rev-sub"></div>
+      </figure>
+      <p>Database đã dùng index đảo. Riêng <code>subsidiary_id</code> thì không còn duy nhất, nên database phải đi theo leaf node chain để lấy mọi entry khớp: sách gọi đó là <code>INDEX RANGE SCAN</code>. PostgreSQL làm bước này theo kiểu của nó, gồm hai node. <code>Bitmap Index Scan</code> đi trong index và gom địa chỉ của mọi row khớp. <code>Bitmap Heap Scan</code> xếp các địa chỉ đó theo block, rồi đọc mỗi block của table đúng một lần. <span data-fact="p:concat-rev-sub:rows">1.000</span> row của subsidiary 20 nằm rải trên <span data-fact="p:concat-rev-sub:blocks">626</span> block.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Số block mỗi query phải đọc</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="concat"></div>
+      </figure>
+      <p>Nói chung, database dùng được concatenated index khi tìm theo các column đứng đầu (bên trái). Index ba column dùng được khi tìm theo column đầu, theo hai column đầu, và theo cả ba column.</p>
+      <p>Thêm index thứ hai cũng cho tốc độ đọc rất tốt, nhưng một index vẫn tốt hơn. Nó tiết kiệm chỗ lưu trữ, và tiết kiệm công bảo trì index thứ hai. Table càng ít index thì insert, delete, update càng nhanh.</p>
+      <p>Để định nghĩa một index tối ưu, phải hiểu không chỉ cách index hoạt động mà cả cách ứng dụng query dữ liệu: những tổ hợp column nào xuất hiện trong WHERE. Vì thế consultant bên ngoài rất khó định nghĩa index tối ưu: họ không thấy toàn bộ access path của ứng dụng, thường chỉ xét được một query, và bỏ lỡ lợi ích index có thể mang lại cho các query khác. DBA cũng ở vị trí tương tự: biết schema, nhưng không nắm sâu access path. Nơi duy nhất mà hiểu biết kỹ thuật về database gặp hiểu biết nghiệp vụ là đội phát triển. Developer có cảm nhận về dữ liệu và biết access path, nên index đúng cho cả ứng dụng mà không tốn nhiều công.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Slow Indexes, Part II: đổi một index có thể làm chậm query khác</h3>
+      <p>Mục trước đổi thứ tự column để một index có ích hơn, nhưng mới chỉ xét hai câu SQL. Đổi một index có thể ảnh hưởng mọi query trên table đó. Mục này giải thích database chọn index thế nào, và tác dụng phụ có thể có khi đổi index.</p>
+      <p>Index primary key mới giúp mọi query tìm theo subsidiary. Nhưng nó cũng dùng được cho <em>mọi</em> query có <code>subsidiary_id</code>, dù có thêm điều kiện khác hay không. Tức là nó thành một lựa chọn cho cả những query trước đây dùng index khác, với phần khác của WHERE. Khi có nhiều access path, việc chọn cái tốt nhất thuộc về optimizer.</p>
+      <aside class="box">
+        <b class="k">Query optimizer</b>
+        Query optimizer (PostgreSQL gọi là planner) là thành phần biến câu SQL thành execution plan; quá trình này còn gọi là compile hay parse. Có hai loại. <b>Cost-based optimizer</b> sinh nhiều phương án plan, tính một giá trị <b>cost</b> cho mỗi phương án dựa trên các thao tác dùng và số row ước tính, rồi lấy cost làm thước đo để chọn plan "tốt nhất". <b>Rule-based optimizer</b> dựng plan theo một bộ luật cố định; kém linh hoạt và ngày nay hiếm khi dùng. PostgreSQL và Oracle đều là cost-based.
+      </aside>
+      <p>Đổi index cũng có thể gây tác dụng phụ khó chịu. Trong ví dụ của sách, ứng dụng danh bạ nội bộ trở nên rất chậm từ sau vụ sáp nhập. Phân tích đầu tiên chỉ ra query này:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, subsidiary_id, phone_number
+  FROM employees
+ WHERE last_name     = 'WINAND'
+   AND subsidiary_id = 30;</code></pre>
+      <p>Plan Oracle của query này, in trong sách:</p>
+      <pre class="sql"><code>|Id |Operation                   | Name         | Rows | Cost |
+| 0 |SELECT STATEMENT            |              |    1 |   30 |
+|*1 | TABLE ACCESS BY INDEX ROWID| EMPLOYEES    |    1 |   30 |
+|*2 |  INDEX RANGE SCAN          | EMPLOYEES_PK |   40 |    2 |
+
+Predicate Information (identified by operation id):
+  1 - filter("LAST_NAME"='WINAND')
+  2 - access("SUBSIDIARY_ID"=30)</code></pre>
+      <p>Plan này dùng index primary key vừa đảo, cost 30. Phần sau của mục sẽ giải thích nó được dựng khi database chưa có statistics đúng. Để tái hiện trên PostgreSQL, mình xóa statistics của column <code>subsidiary_id</code> rồi xem plan:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Primary key đã đảo, không có statistics</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="slow-nostats"></div>
+      </figure>
+      <p>Plan dùng index. Đáng ngờ là nó dùng đúng index vừa đổi. Index cũ bắt đầu bằng <code>employee_id</code>, column không có trong WHERE, nên trước đây query này không dùng được nó. Muốn biết việc đổi index có gây ra vấn đề không, phải so plan trước và sau khi đổi. Sách lấy plan "trước" bằng một optimizer hint của Oracle: lời chú thích <code>/*+ NO_INDEX(…) */</code> đặt trong câu SQL để cấm optimizer dùng một index.</p>
+      <pre class="sql"><code>SELECT /*+ NO_INDEX(EMPLOYEES EMPLOYEE_PK) */
+       first_name, last_name, subsidiary_id, phone_number
+  FROM employees
+ WHERE last_name  = 'WINAND'
+   AND subsidiary_id = 30;</code></pre>
+      <p>Không có index, Oracle phải đọc cả table, cost 477:</p>
+      <pre class="sql"><code>| Id | Operation         | Name      | Rows | Cost |
+|  0 | SELECT STATEMENT  |           |    1 |  477 |
+|* 1 |  TABLE ACCESS FULL| EMPLOYEES |    1 |  477 |
+
+Predicate Information (identified by operation id):
+   1 - filter("LAST_NAME"='WINAND' AND "SUBSIDIARY_ID"=30)</code></pre>
+      <p>PostgreSQL không có hint. Cách tương đương là tắt các kiểu đọc qua index cho phiên làm việc (<code>SET enable_indexscan = off</code>, <code>SET enable_bitmapscan = off</code>). Plan khi đó cũng là một full table scan:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Không cho dùng index</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="slow-seq"></div>
+      </figure>
+      <p>Sách nhận xét đây là chỗ lạ: full table scan phải đọc và xử lý cả table, vậy mà trong ví dụ của sách nó có vẻ <em>nhanh hơn</em> plan dùng index. Sách không đưa số đo thời gian; dấu hiệu là ứng dụng danh bạ chậm hẳn đi từ khi đổi index. Lạ vì query chỉ khớp một row, và dùng index để tìm một row lẽ ra phải nhanh hơn nhiều. Trên PostgreSQL ở máy này thì ngược lại. Đo trung vị 21 lần chạy, full table scan mất <span data-fact="t:seq">7,3</span> ms, plan dùng index mất <span data-fact="t:nostats">1,8</span> ms. Query này trước khi đổi index cũng chạy full table scan, nên trên máy này, đổi index còn làm nó nhanh hơn. Vì sao sách và PostgreSQL ra hai kết quả khác nhau? Câu trả lời nằm ở cách plan dùng index làm việc.</p>
+      <p>Bước đầu là range scan trên index primary key. Index đó không có column <code>last_name</code>, nên lúc scan index chỉ xét được điều kiện <code>subsidiary_id = 30</code>. Plan ghi rõ điều này: điều kiện ở dòng <code>index cond</code> dùng khi đi trong index; điều kiện ở dòng <code>filter</code> chỉ được kiểm tra sau, khi đã đọc row từ table. Range scan tìm entry đầu tiên của subsidiary 30, rồi đi theo leaf node chain để lấy mọi entry khác của subsidiary đó: <span data-fact="p:slow-nostats:scanned">10.000</span> địa chỉ, mỗi người của công ty gốc một địa chỉ. Có <code>last_name</code> rồi database mới kiểm tra được phần còn lại của WHERE, nên nó phải lấy cả <span data-fact="p:slow-nostats:scanned">10.000</span> row từ table để giữ lại một.</p>
+      <p>Oracle trong sách lấy từng row một theo ROWID. PostgreSQL cũng làm được y như vậy nếu tắt kiểu bitmap (<code>Index Scan</code>): <span data-fact="p:slow-indexscan:blocks">10.019</span> lần đọc block để ra một row, trong khi cả table chỉ có <span data-fact="p:slow-seq:blocks">957</span> block. Đây là đủ hai nguyên liệu của index chậm ở chương 1: scan một đoạn index rộng, rồi lấy nhiều row riêng lẻ. Kiểu bitmap mà PostgreSQL tự chọn thì xếp các địa chỉ theo block trước, rồi đọc mỗi block một lần: <span data-fact="p:slow-nostats:blocks">986</span> block, xấp xỉ cả table.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Cùng một query, bốn plan</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="slow"></div>
+        <figcaption>Trung vị 21 lần chạy, theo <code>EXPLAIN ANALYZE</code>. Dữ liệu đã nằm trong bộ nhớ.</figcaption>
+      </figure>
+      <p>Vậy là cả hai plan dùng index đều đọc ít nhất ngần ấy block như full table scan, mà vẫn nhanh hơn nó. Lý do là cả table chỉ khoảng 7,5 MB và đã nằm trong bộ nhớ, nên đọc một block chỉ là đọc RAM. Phần tốn thời gian là kiểm tra WHERE: full table scan kiểm tra cả <span data-fact="c:rows">100.000</span> row, plan dùng index chỉ kiểm tra <span data-fact="p:slow-nostats:scanned">10.000</span> row. Sách thì giả định mỗi lần lấy row riêng lẻ có thể là một lần đọc đĩa, còn full table scan đọc được nhiều block một lượt (khung "Full table scan" ở trên). Khi đó <span data-fact="p:slow-nostats:scanned">10.000</span> lần đọc riêng lẻ mới thua đọc cả table. Thời gian chạy của plan dùng index tăng theo số nhân viên của subsidiary, không theo kích thước kết quả; với một subsidiary đủ lớn, hoặc khi dữ liệu phải đọc từ đĩa, nó sẽ thua full table scan.</p>
+      <p>Chọn plan tốt nhất còn phụ thuộc cách dữ liệu phân bố, nên optimizer dùng <b>statistics</b> về nội dung database. Ở đây đó là histogram: phân bố nhân viên theo subsidiary. Nhờ nó, optimizer ước tính được range scan trả về bao nhiêu row, rồi dùng con số đó để tính cost.</p>
+      <aside class="box">
+        <b class="k">Statistics</b>
+        Cost-based optimizer dùng statistics về table, column và index. Phần lớn được thu ở mức column: số giá trị khác nhau, giá trị nhỏ nhất và lớn nhất, số NULL, và histogram (phân bố dữ liệu). Statistics quan trọng nhất của table là kích thước, tính bằng row và block. Statistics quan trọng nhất của index là độ sâu tree, số leaf node, số key khác nhau và clustering factor (chương 5). Optimizer dùng chúng để ước tính selectivity của các điều kiện trong WHERE. PostgreSQL thu statistics bằng lệnh <code>ANALYZE</code>.
+      </aside>
+      <p>Khi không có statistics, optimizer dùng giá trị mặc định. Mặc định của Oracle ước tính range scan trả về 40 row; của PostgreSQL là <span data-fact="p:slow-nostats:idxest">500</span> row (cột "Rows ước tính" ở plan đầu tiên). Cả hai đều thấp quá xa: trong sách subsidiary 30 có 1.000 người, ở dữ liệu này có <span data-fact="c:sub30">10.000</span> người. Có statistics đúng, PostgreSQL ước tính <span data-fact="p:slow-stats:idxest">9.977</span> row và tính cost <span data-fact="p:slow-stats:cost">1.294</span> cho plan bitmap. Trong sách, khi có statistics đúng, Oracle ước tính 1.000 row cho range scan và tính cost 680 cho plan dùng index. Con số đó cao hơn cost 477 của full table scan ở trên, nên Oracle tự chuyển sang full table scan. PostgreSQL thì vẫn giữ bitmap, vì cost đó vẫn thấp hơn full table scan (<span data-fact="p:slow-seq:cost">2.457</span>). Với dữ liệu ở đây, lựa chọn đó đúng: số đo ở trên cho thấy bitmap nhanh hơn.</p>
+      <p>Khác biệt giữa hai database không đổi kết luận của sách: index này không phải câu trả lời tốt cho query này. Tìm theo họ thì index trên <code>last_name</code> là hỗ trợ tốt nhất:</p>
+      <pre class="sql"><code>CREATE INDEX emp_name ON employees (last_name);</code></pre>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Index riêng cho last_name</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="slow-name"></div>
+      </figure>
+      <p>Lần tra index chỉ ra một row, và database chỉ phải lấy đúng row đó từ table: <span data-fact="p:slow-name:blocks">4</span> block, <span data-fact="t:name">0,013</span> ms. Nhanh hơn plan bitmap khoảng <span data-fact="t:nameX">140</span> lần. Để ý: plan lấy từng row và plan dùng <code>emp_name</code> có cùng một tên thao tác, <code>Index Scan</code>, vậy mà một bên đọc <span data-fact="p:slow-indexscan:blocks">10.019</span> block, bên kia <span data-fact="p:slow-name:blocks">4</span>. Dùng index không tự động có nghĩa câu lệnh đang chạy theo cách tốt nhất.</p>
+    </div>
+  </section>
+
+  <!-- ===================== Functions ===================== -->
+  <section id="functions">
+    <div class="reveal">
+      <h2>Functions</h2>
+      <p class="sub">Index trên <code>last_name</code> đã giúp rất nhiều, nhưng nó bắt phải tìm đúng kiểu chữ hoa, chữ thường như lúc lưu. Mục này gỡ giới hạn đó mà không mất hiệu năng.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Case-Insensitive Search: index trên last_name không giúp gì cho UPPER(last_name)</h3>
+      <p>Bỏ qua hoa thường trong WHERE rất đơn giản, ví dụ đổi cả hai vế của phép so sánh sang chữ hoa:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, phone_number
+  FROM employees
+ WHERE UPPER(last_name) = UPPER('winand');</code></pre>
+      <p>Dù từ khóa tìm kiếm hay column <code>last_name</code> viết hoa hay thường, <code>UPPER</code> làm chúng khớp nhau như mong muốn. Logic của query hoàn toàn hợp lý. Plan thì không:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Có index trên last_name, tìm theo UPPER(last_name)</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="fn-upper-bad"></div>
+      </figure>
+      <p>Lại là full table scan quen thuộc. Có index trên <code>last_name</code>, nhưng không dùng được, vì query không tìm theo <code>last_name</code> mà theo <code>UPPER(last_name)</code>. Với database, đó là một thứ khác hẳn.</p>
+      <p>Đây là cái bẫy ai cũng có thể rơi vào. Ta thấy ngay quan hệ giữa <code>last_name</code> và <code>UPPER(last_name)</code>, và mong database cũng "thấy". Thực ra optimizer nhìn query giống thế này:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, phone_number
+  FROM employees
+ WHERE BLACKBOX(...) = 'WINAND';</code></pre>
+      <p><code>UPPER</code> chỉ là một hộp đen. Tham số đưa vào không quan trọng, vì không có quan hệ chung nào giữa tham số của một function và kết quả của nó.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Thay tên function bằng <code>BLACKBOX</code> để thấy query theo góc nhìn của optimizer.
+      </aside>
+      <aside class="box">
+        <b class="k">Tính trước lúc compile</b>
+        Optimizer tính được vế phải <code>UPPER('winand')</code> ngay lúc lập plan, vì nó có đủ tham số. Vì vậy plan chỉ ghi giá trị đã viết hoa, <code>'WINAND'</code>, giống một compiler tính sẵn các biểu thức hằng.
+      </aside>
+      <p>Để hỗ trợ query đó, cần một index phủ đúng thứ được tìm: không phải index trên <code>last_name</code>, mà trên <code>UPPER(last_name)</code>:</p>
+      <pre class="sql"><code>CREATE INDEX emp_up_name
+    ON employees (UPPER(last_name));</code></pre>
+      <p>Index mà định nghĩa chứa function hay expression gọi là <b>function-based index</b> (FBI; PostgreSQL gọi là index on expression). Thay vì chép thẳng dữ liệu của column vào index, nó áp function trước rồi lưu kết quả. Index này lưu tên ở dạng chữ hoa. Database dùng được function-based index khi câu SQL có đúng expression trong định nghĩa index, như ví dụ trên:</p>
+      <figure class="planfig">
+        <div class="fig-head"><h4>Function-based index, ngay sau khi tạo</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-plan="fn-upper-nostats"></div>
+      </figure>
+      <p>Đây là một range scan bình thường như ở chương 1: duyệt B-tree rồi đi theo leaf node chain. Không có thao tác hay từ khóa riêng nào cho function-based index.</p>
+      <aside class="box">
+        <b class="k">Cảnh báo</b>
+        Đôi khi ORM tự dùng <code>UPPER</code> và <code>LOWER</code> mà developer không biết. Hibernate, ví dụ, chèn ngầm <code>LOWER</code> cho các tìm kiếm không phân biệt hoa thường.
+      </aside>
+      <p>Plan chưa giống plan ở mục trước: ước tính số row quá cao, <span data-fact="p:fn-upper-nostats:idxest">500</span> row trong khi thật chỉ có <span data-fact="p:fn-upper-nostats:rows">1</span>. Ước tính lệch như vậy thường báo hiệu vấn đề với statistics. Sách giải thích với Oracle: tạo index mới không cập nhật statistics của table. PostgreSQL cũng thế: statistics cho expression <code>UPPER(last_name)</code> chỉ có sau khi chạy <code>ANALYZE</code>. Chạy xong, optimizer ước tính <span data-fact="p:fn-upper-good:idxest">1</span> row, đúng bằng thực tế.</p>
+      <p>Ở đây statistics mới không làm query nhanh hơn, vì index vốn đã được dùng đúng. Nhưng luôn nên kiểm tra ước tính của optimizer. Số row ước tính cho mỗi thao tác (cardinality estimate) là con số đặc biệt quan trọng; PostgreSQL ghi nó cạnh số row thật. Tác giả khuyên: sau mỗi lần đổi index, cập nhật statistics cho table và mọi index của nó, và phối hợp việc này với DBA.</p>
+      <p>SQL Server không có function-based index theo cách này, nhưng có computed column: thêm một column tính từ <code>UPPER(last_name)</code> vào table rồi index column đó. SQL Server dùng được index này mỗi khi expression đó xuất hiện trong câu lệnh, không cần viết lại query.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>User-Defined Functions: chỉ function deterministic mới index được</h3>
+      <p>Function-based indexing rất tổng quát. Ngoài các function như <code>UPPER</code>, có thể index cả expression như <code>A + B</code>, và cả function tự viết. Có một ngoại lệ quan trọng: không thể nhắc tới thời gian hiện tại trong định nghĩa index, dù trực tiếp hay gián tiếp như ví dụ sau:</p>
+      <pre class="sql"><code>CREATE FUNCTION get_age(date_of_birth date) RETURNS int
+LANGUAGE sql
+AS $$ SELECT extract(year FROM age(current_date, date_of_birth))::int $$;</code></pre>
+      <p><code>get_age</code> dùng ngày hiện tại để tính tuổi từ ngày sinh. Function này dùng được ở mọi phần của query, ví dụ trong SELECT và WHERE:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, get_age(date_of_birth)
+  FROM employees
+ WHERE get_age(date_of_birth) = 42;</code></pre>
+      <p>Query liệt kê mọi nhân viên 42 tuổi. Function-based index trên <code>get_age</code> là ý tưởng hiển nhiên, nhưng không làm được, vì function không <b>deterministic</b>: kết quả không chỉ phụ thuộc tham số. Chỉ function luôn trả cùng kết quả cho cùng tham số mới index được. PostgreSQL từ chối thẳng:</p>
+      <pre class="sql err"><code>CREATE INDEX emp_age ON employees (get_age(date_of_birth));
+-- ERROR: <span data-fact="e:get_age_index">functions in index expression must be marked IMMUTABLE</span></code></pre>
+      <p>Lý do của giới hạn rất đơn giản. Khi insert một row, database gọi function và lưu kết quả vào index, và nó nằm yên ở đó. Không có tiến trình nào định kỳ cập nhật index. Database chỉ cập nhật tuổi trong index khi ngày sinh bị đổi bằng một câu UPDATE. Qua sinh nhật tiếp theo, tuổi lưu trong index sẽ sai.</p>
+      <p>Ngoài việc phải deterministic thật, PostgreSQL và Oracle còn bắt function được <em>khai báo</em> là deterministic: từ khóa <code>IMMUTABLE</code> (PostgreSQL) hay <code>DETERMINISTIC</code> (Oracle).</p>
+      <aside class="box">
+        <b class="k">Thận trọng</b>
+        PostgreSQL và Oracle tin vào khai báo <code>IMMUTABLE</code> hay <code>DETERMINISTIC</code>, tức là tin developer. Có thể khai báo <code>get_age</code> là <code>IMMUTABLE</code> và dùng nó trong index. Dù khai báo thế nào, nó cũng không chạy đúng: tuổi lưu trong index không tăng theo năm tháng. Nhân viên không già đi, ít nhất là trong index. Các ví dụ khác không "index" được: hàm sinh số ngẫu nhiên, và function phụ thuộc biến môi trường.
+      </aside>
+      <aside class="box">
+        <b class="k">Thử nghĩ</b>
+        Làm sao vẫn dùng được index để tối ưu query tìm mọi nhân viên 42 tuổi? (Mục Date Types ở cuối chương có gợi ý.)
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Over-Indexing: dùng một function thống nhất để một index là đủ</h3>
+      <p>Nếu function-based index còn mới với bạn, rất dễ muốn index mọi thứ. Đó thực ra là việc nên làm sau cùng, vì mỗi index kéo theo công bảo trì liên tục. Function-based index đặc biệt rắc rối vì chúng làm việc tạo index thừa trở nên rất dễ. Tìm không phân biệt hoa thường ở trên cũng viết được bằng <code>LOWER</code>:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, phone_number
+  FROM employees
+ WHERE LOWER(last_name) = LOWER('winand');</code></pre>
+      <p>Index trên <code>UPPER(last_name)</code> không giúp gì cho query này: PostgreSQL quay lại <code data-fact="p:fn-lower:op">Seq Scan</code>, đọc <span data-fact="p:fn-lower:blocks">957</span> block. Một index không hỗ trợ được cả hai cách bỏ qua hoa thường. Có thể tạo index thứ hai trên <code>LOWER(last_name)</code>, nhưng khi đó database phải bảo trì hai index cho mỗi câu insert, update và delete (chương 8). Để một index là đủ, hãy dùng thống nhất một function trong cả ứng dụng.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Thống nhất access path để một index dùng được cho nhiều query. Và luôn ưu tiên index dữ liệu gốc: đó thường là thông tin hữu ích nhất có thể đưa vào index.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===================== Parameterized Queries ===================== -->
+  <section id="parameterized">
+    <div class="reveal">
+      <h2>Parameterized Queries</h2>
+      <p class="sub">Bind parameter giúp chống SQL injection và cho phép database tái dùng plan. Đổi lại, optimizer không còn thấy giá trị thật.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Bind parameter: một plan cho mọi giá trị</h3>
+      <p>Mục này nói về thứ mà phần lớn sách SQL bỏ qua: parameterized query và <b>bind parameter</b> (còn gọi là dynamic parameter hay bind variable). Đó là một cách khác để đưa dữ liệu vào database. Thay vì viết thẳng giá trị vào câu SQL, ta dùng một chỗ giữ chỗ như <code>?</code>, <code>:name</code>, <code>@name</code> (PostgreSQL dùng <code>$1</code>), rồi truyền giá trị thật qua một lời gọi API riêng.</p>
+      <p>Viết thẳng giá trị vào các câu lệnh ad-hoc không có gì sai. Nhưng trong chương trình, có hai lý do tốt để dùng bind parameter:</p>
+      <ul class="sq-list">
+        <li><span><b>Security.</b> Bind parameter là cách tốt nhất để chống <a href="https://en.wikipedia.org/wiki/SQL_injection">SQL injection</a>.</span></li>
+        <li><span><b>Performance.</b> Database có execution plan cache, như SQL Server và Oracle, tái dùng được plan khi chạy cùng một câu lệnh nhiều lần. Nó đỡ công dựng lại plan, nhưng chỉ khi câu SQL giống hệt. Viết giá trị khác vào câu SQL thì database coi đó là câu lệnh khác và dựng lại plan. Với bind parameter, câu lệnh không đổi khi chạy với giá trị khác.</span></li>
+      </ul>
+      <p>Tất nhiên có ngoại lệ, ví dụ khi lượng dữ liệu bị ảnh hưởng phụ thuộc vào giá trị. Subsidiary 20 có <span data-fact="c:sub20">1.000</span> người, subsidiary 30 có <span data-fact="c:sub30">10.000</span>:</p>
+      <pre class="sql"><code>SELECT first_name, last_name
+  FROM employees
+ WHERE subsidiary_id = 20;   -- rồi = 30</code></pre>
+      <p>Optimizer dùng histogram trên <code>subsidiary_id</code> để biết mỗi giá trị xuất hiện bao nhiêu lần, nên có hai ước tính khác nhau cho hai query: <span data-fact="p:param-20:idxest">1.013</span> và <span data-fact="p:param-30:idxest">9.937</span> row. Cost tính sau đó cũng khác, và optimizer lấy plan có cost thấp nhất. Trong sách, Oracle dùng index cho subsidiary nhỏ và full table scan cho subsidiary lớn. PostgreSQL ở đây chọn bitmap cho cả hai, như ở mục Slow Indexes, Part II.</p>
+      <p>Với bind parameter, optimizer không có giá trị cụ thể để tra tần suất. Nó giả định dữ liệu phân bố đều, nên luôn ra cùng ước tính, cùng cost, và cuối cùng luôn chọn cùng một plan. Ở PostgreSQL, plan dựng một lần cho mọi giá trị gọi là <b>generic plan</b>:</p>
+      <pre class="sql"><code>PREPARE by_sub(int) AS
+  SELECT first_name, last_name FROM employees WHERE subsidiary_id = $1;
+EXECUTE by_sub(20);   -- rồi EXECUTE by_sub(30);</code></pre>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Số row optimizer ước tính</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="param"></div>
+        <figcaption>Với giá trị viết thẳng, histogram cho hai ước tính sát thực tế. Với bind parameter, cả hai giá trị nhận cùng một ước tính.</figcaption>
+      </figure>
+      <p>Generic plan ước tính <span data-fact="p:param-generic-20:idxest">1.099</span> row cho mọi giá trị: <span data-fact="c:rows">100.000</span> row chia đều cho <span data-fact="c:subsidiaries">91</span> subsidiary.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Histogram có ích nhất khi giá trị phân bố không đều. Với column phân bố đều, chia số row cho số giá trị khác nhau thường là đủ, và cách đó vẫn dùng được với bind parameter.
+      </aside>
+      <p>Nếu ví optimizer như compiler, bind parameter giống biến trong chương trình, còn giá trị viết thẳng vào câu lệnh giống hằng số. Database dùng được giá trị trong câu SQL lúc tối ưu, như compiler tính được biểu thức hằng lúc compile. Nói đơn giản, optimizer không thấy bind parameter, như compiler không biết giá trị lúc chạy của biến.</p>
+      <p>Từ góc này, hơi nghịch lý khi bind parameter lại cải thiện hiệu năng, trong khi không dùng chúng thì optimizer luôn chọn được plan tốt nhất. Nhưng với giá nào? Sinh và đánh giá mọi phương án plan là công sức rất lớn, và không đáng nếu cuối cùng vẫn ra cùng kết quả.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Không dùng bind parameter giống như compile lại chương trình mỗi lần chạy.
+      </aside>
+      <p>Database đứng trước một thế khó: tốn công đánh giá mọi phương án ở mỗi lần chạy để luôn có plan tốt nhất, hay tiết kiệm công tối ưu và dùng plan đã cache khi có thể, chấp nhận rủi ro plan không tối ưu. Cái khó là database không biết tối ưu lại có ra plan khác hay không nếu không thực sự tối ưu lại. Các hãng database thử giải bằng heuristic, với thành công rất hạn chế.</p>
+      <p>Developer có thể chủ động dùng bind parameter để gỡ thế khó này: luôn dùng bind parameter, trừ những giá trị <em>nên</em> ảnh hưởng tới plan. Ví dụ tốt là các mã trạng thái phân bố lệch như "todo" và "done": số "done" thường nhiều hơn "todo" cả chục lần, và index chỉ đáng dùng khi tìm "todo". Partitioning là một ví dụ khác: giá trị thật quyết định phải scan partition nào. Hiệu năng của LIKE cũng có thể bị bind parameter làm hại, như mục sau sẽ thấy.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Trên thực tế chỉ có ít trường hợp giá trị thật ảnh hưởng tới plan. Nên khi phân vân, cứ dùng bind parameter, dù chỉ để chống SQL injection.
+      </aside>
+      <details class="plan-more">
+        <summary>Cách dùng bind parameter trong một số ngôn ngữ (theo sách)</summary>
+        <p><b>Java</b>, không có bind parameter:</p>
+        <pre class="sql"><code>int subsidiary_id;
+Statement command = connection.createStatement(
+                    "select first_name, last_name"
+                  + "  from employees"
+                  + " where subsidiary_id = " + subsidiary_id
+                  );</code></pre>
+        <p>Dùng bind parameter:</p>
+        <pre class="sql"><code>int subsidiary_id;
+PreparedStatement command = connection.prepareStatement(
+                    "select first_name, last_name"
+                  + "  from employees"
+                  + " where subsidiary_id = ?"
+                  );
+command.setInt(1, subsidiary_id);</code></pre>
+        <p><b>C#</b>:</p>
+        <pre class="sql"><code>SqlCommand cmd = new SqlCommand(
+                    "select first_name, last_name"
+                  + "  from employees"
+                  + " where subsidiary_id = @subsidiary_id"
+                  , connection);
+cmd.Parameters.AddWithValue("@subsidiary_id", subsidiary_id);</code></pre>
+        <p><b>Perl</b>:</p>
+        <pre class="sql"><code>my $sth = $dbh->prepare(
+                  "select first_name, last_name"
+                . "  from employees"
+                . " where subsidiary_id = ?"
+                );
+$sth->execute($subsidiary_id);</code></pre>
+        <p><b>PHP</b> (MySQL):</p>
+        <pre class="sql"><code>if ($stmt = $mysqli->prepare("select first_name, last_name"
+                           . "  from employees"
+                           . " where subsidiary_id = ?"))
+{
+   $stmt->bind_param("i", $subsidiary_id);
+   $stmt->execute();
+}</code></pre>
+        <p><b>Ruby</b>:</p>
+        <pre class="sql"><code>dbh.prepare("select first_name, last_name"
+          + "  from employees"
+          + " where subsidiary_id = ?");
+dbh.execute(subsidiary_id);</code></pre>
+      </details>
+      <p>Dấu hỏi (<code>?</code>) là ký tự giữ chỗ duy nhất mà chuẩn SQL định nghĩa. Đó là tham số theo vị trí: các dấu hỏi được đánh số từ trái sang phải, và muốn gán giá trị cho một dấu hỏi thì phải nêu số của nó. Cách này khá bất tiện vì số thứ tự đổi khi thêm hay bớt chỗ giữ chỗ. Nhiều database có phần mở rộng riêng cho tham số có tên, như <code>@name</code> hay <code>:name</code>.</p>
+      <aside class="box">
+        <b class="k">Lưu ý</b>
+        Bind parameter không thể đổi cấu trúc câu SQL: không dùng được cho tên table hay tên column. Cần đổi cấu trúc câu lệnh lúc chạy thì dùng dynamic SQL.
+      </aside>
+      <aside class="box">
+        <b class="k">Cursor sharing và auto parameterization</b>
+        Optimizer và query càng phức tạp, cache plan càng quan trọng. Oracle và SQL Server có tính năng tự thay giá trị trong chuỗi SQL bằng bind parameter (<code>CURSOR_SHARING</code>, forced parameterization). Đó là cách chữa cháy cho ứng dụng không hề dùng bind parameter, và bật nó lên thì developer không còn cố ý dùng giá trị viết thẳng được nữa.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===================== Searching for Ranges ===================== -->
+  <section id="ranges">
+    <div class="reveal">
+      <h2>Searching for Ranges</h2>
+      <p class="sub">Các toán tử <code>&lt;</code>, <code>&gt;</code> và <code>BETWEEN</code> dùng được index như <code>=</code>. Cả LIKE, trong một số điều kiện, cũng dùng index như một điều kiện khoảng. Nhưng chúng giới hạn cách chọn thứ tự column, và có query mà không có thứ tự column nào là "đúng".</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Greater, Less and BETWEEN: index cho điều kiện bằng trước, điều kiện khoảng sau</h3>
+      <p>Rủi ro hiệu năng lớn nhất của range scan là đoạn đi theo leaf node chain. Vì thế luật vàng của indexing là giữ đoạn index phải scan nhỏ nhất có thể. Cách kiểm tra: tự hỏi lần scan bắt đầu ở đâu và kết thúc ở đâu.</p>
+      <p>Câu hỏi dễ trả lời khi câu SQL nêu rõ điểm đầu và điểm cuối:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, date_of_birth
+  FROM employees
+ WHERE date_of_birth &gt;= ?
+   AND date_of_birth &lt;= ?;</code></pre>
+      <p>Index trên <code>date_of_birth</code> chỉ bị scan trong khoảng đã nêu: bắt đầu ở ngày thứ nhất, kết thúc ở ngày thứ hai. Không thể thu hẹp đoạn scan hơn nữa. Điểm đầu và điểm cuối khó thấy hơn khi có thêm một column:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, date_of_birth
+  FROM employees
+ WHERE date_of_birth &gt;= ?
+   AND date_of_birth &lt;= ?
+   AND subsidiary_id  = ?;</code></pre>
+      <p>Index lý tưởng tất nhiên phải phủ cả hai column, nhưng theo thứ tự nào? Hai hình dưới cho thấy thứ tự column ảnh hưởng tới đoạn scan thế nào. Ví dụ tìm mọi nhân viên của subsidiary 27 sinh từ ngày 1 tới ngày 9 tháng 1 năm 1971.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 2.2</span><h4>Range scan trên index (date_of_birth, subsidiary_id)</h4><span class="tag">Hình trong sách</span></div>
+        <svg class="sk" data-fig="22" role="img" aria-label="Branch node và năm leaf node của index xếp theo ngày sinh rồi subsidiary. Đoạn scan trải qua cả năm leaf node, 13 entry, để lấy một entry của subsidiary 27."></svg>
+        <figcaption>Chỉ khoảng ngày giới hạn được đoạn scan: database đọc qua cả năm leaf node để lấy một entry.</figcaption>
+      </figure>
+      <p>Hình 2.2 là một đoạn của index trên <code>date_of_birth</code> và <code>subsidiary_id</code>, theo thứ tự đó. Database sẽ bắt đầu đi theo leaf node chain ở đâu, hay nói cách khác, tree traversal dừng ở đâu? Index xếp theo ngày sinh trước. Chỉ khi hai người sinh cùng ngày thì <code>subsidiary_id</code> mới được dùng để sắp. Query lại hỏi một khoảng ngày, nên thứ tự của <code>subsidiary_id</code> vô dụng khi duyệt tree. Thấy rõ khi nhận ra branch node không có entry nào của subsidiary 27, dù leaf node thì có. Điều kiện ngày sinh là điều kiện duy nhất giới hạn đoạn scan: từ entry đầu tiên trong khoảng ngày tới entry cuối cùng, tức cả năm leaf node trong hình.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 2.3</span><h4>Range scan trên index (subsidiary_id, date_of_birth)</h4><span class="tag">Hình trong sách</span></div>
+        <svg class="sk" data-fig="23" role="img" aria-label="Branch node và năm leaf node của index xếp theo subsidiary rồi ngày sinh. Tree dẫn thẳng tới leaf node thứ hai; đoạn scan chỉ có một entry."></svg>
+        <figcaption>Điều kiện bằng đứng trước: tree dẫn thẳng tới leaf node thứ hai, và scan dừng ngay trong leaf đó.</figcaption>
+      </figure>
+      <p>Đảo thứ tự column thì khác hẳn. Toán tử bằng giới hạn column đầu vào đúng một giá trị. Trong đoạn của giá trị đó (subsidiary 27), index xếp theo column thứ hai, ngày sinh. Nên không cần vào leaf node đầu: branch node đã cho biết leaf đầu không có ai của subsidiary 27 sinh sau ngày 25/6/1969. Tree traversal dẫn thẳng tới leaf node thứ hai. Ở đây mọi điều kiện của WHERE đều giới hạn đoạn scan, nên scan kết thúc ngay trong leaf node đó.</p>
+      <aside class="box important">
+        <b class="k">Mẹo</b>
+        Quy tắc nhanh: index cho điều kiện bằng trước, rồi mới tới điều kiện khoảng.
+      </aside>
+      <p>Chênh lệch thực tế phụ thuộc dữ liệu và điều kiện tìm. Nếu bản thân điều kiện ngày sinh đã rất chọn lọc, chênh lệch có thể không đáng kể. Khoảng ngày càng rộng, chênh lệch càng lớn.</p>
+      <p>Ví dụ này cũng bác bỏ được lời đồn "column chọn lọc nhất phải đứng đầu index". Nếu chỉ xét selectivity của column đầu, cả hai điều kiện đều khớp 13 record trong hình, dù lọc riêng theo ngày sinh hay riêng theo subsidiary. Selectivity không giúp gì ở đây, nhưng một thứ tự vẫn tốt hơn thứ tự kia.</p>
+      <p>Trên table thật: khoảng 9 ngày khớp <span data-fact="c:range_dob">47</span> người, subsidiary 27 có <span data-fact="c:range_sub27">1.000</span> người, cả hai điều kiện khớp <span data-fact="c:range_both">2</span> người. Hai plan dưới chạy đúng query trên với hai thứ tự column:</p>
+      <div class="planpair">
+        <figure class="planfig">
+          <div class="fig-head"><h4>emp_test (date_of_birth, subsidiary_id)</h4><span class="tag real">Đo thực tế</span></div>
+          <div data-plan="range-test"></div>
+        </figure>
+        <figure class="planfig">
+          <div class="fig-head"><h4>emp_test2 (subsidiary_id, date_of_birth)</h4><span class="tag real">Đo thực tế</span></div>
+          <div data-plan="range-test2"></div>
+        </figure>
+      </div>
+      <p>Để tối ưu, rất cần biết đoạn index bị scan. Với Oracle, plan cho thấy điều này rõ ràng: phần "Predicate Information" chia các điều kiện của WHERE thành <b>access predicate</b> và <b>filter predicate</b>. Đó là cách database cho biết nó dùng mỗi điều kiện thế nào. Đây là predicate information của bước <code>INDEX RANGE SCAN</code> trên <code>emp_test</code>, trong plan Oracle của sách (sách dùng bind parameter cho ngày đầu, ngày cuối và subsidiary):</p>
+      <pre class="sql"><code>3 - access(DATE_OF_BIRTH &gt;= :START_DT
+       AND DATE_OF_BIRTH &lt;= :END_DT)
+    filter(SUBSIDIARY_ID  = :SUBS_ID)</code></pre>
+      <p>Chỉ hai điều kiện trên <code>date_of_birth</code> là access predicate: chúng giới hạn đoạn index bị scan. Điều kiện trên <code>subsidiary_id</code> chỉ là filter. Với <code>emp_test2</code>, plan của sách đưa cả ba điều kiện vào <code>access</code>.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Access predicate là điều kiện bắt đầu và kết thúc của một lần tra index: chúng định ra đoạn index bị scan. Index filter predicate chỉ được áp dụng khi đi theo leaf node chain; chúng không thu hẹp đoạn scan.
+      </aside>
+      <p>PostgreSQL không tách hai loại này cho index B-tree: cả hai plan trên đều ghi cả ba điều kiện vào <code>index cond</code>. Muốn biết điều kiện nào thật sự giới hạn đoạn scan, phải nhìn thứ tự column của index, hoặc số block: <span data-fact="p:range-test:blocks">6</span> so với <span data-fact="p:range-test2:blocks">3</span>. Với khoảng chỉ 9 ngày, chênh lệch còn nhỏ, như đã nói ở trên: khoảng ngày càng hẹp, hai thứ tự column càng gần nhau.</p>
+      <p>Cuối cùng là toán tử <code>BETWEEN</code>, cho phép nêu cận trên và cận dưới trong một điều kiện. <code>BETWEEN</code> luôn bao gồm hai giá trị biên, giống dùng <code>&gt;=</code> và <code>&lt;=</code>:</p>
+      <pre class="sql"><code>    date_of_birth BETWEEN '1971-01-01' AND '1971-01-10'
+-- giống hệt
+    date_of_birth &gt;= '1971-01-01'
+AND date_of_birth &lt;= '1971-01-10'</code></pre>
+    </div>
+
+    <div class="step reveal">
+      <h3>Indexing LIKE Filters: chỉ phần trước wildcard đầu tiên thu hẹp đoạn scan</h3>
+      <figure class="photo inline"><img src="../assets/schlagwortkatalog.webp" alt="Tủ thẻ mục lục theo chủ đề ở thư viện Đại học Graz, một ngăn đang mở" width="1600" height="1353" loading="lazy"><figcaption>Biết chữ đầu là đi thẳng tới đúng ngăn. Chỉ biết chữ cuối thì phải lật cả tủ.</figcaption></figure>
+      <p>Toán tử LIKE rất hay gây hiệu năng bất ngờ, vì có mẫu tìm dùng index rất tốt, có mẫu thì không. Vị trí của wildcard tạo ra mọi khác biệt. Ví dụ sau có <code>%</code> ở giữa mẫu:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, date_of_birth
+  FROM employees
+ WHERE UPPER(last_name) LIKE 'WIN%D';</code></pre>
+      <p>Khi duyệt tree, LIKE chỉ dùng được các ký tự đứng trước wildcard đầu tiên. Các ký tự còn lại chỉ là filter predicate, không thu hẹp đoạn scan. Vậy một biểu thức LIKE có thể chứa hai loại predicate: phần trước wildcard đầu tiên là access predicate, phần còn lại là filter predicate.</p>
+      <aside class="box">
+        <b class="k">Thận trọng với PostgreSQL</b>
+        Với PostgreSQL, có thể phải chỉ định operator class (ví dụ <code>varchar_pattern_ops</code>) để LIKE dùng được làm access predicate. Database ở đây dùng collation <code><span data-fact="c:collation">English_United States.1252</span></code>, trong đó thứ tự sắp chữ không trùng với thứ tự từng ký tự. Vì vậy index <code>emp_up_name</code> thường không dùng được cho LIKE (plan là <code data-fact="p:like-plain:op">Seq Scan</code>). Các ví dụ dưới dùng index có operator class:
+        <pre class="sql"><code>CREATE INDEX emp_up_name_ops
+    ON employees (UPPER(last_name) text_pattern_ops);</code></pre>
+      </aside>
+      <p>Tiền tố trước wildcard đầu tiên càng chọn lọc, đoạn scan càng nhỏ, và lần tra index càng nhanh. Hình 2.4 minh họa với ba biểu thức LIKE. Cả ba chọn ra cùng một row, nhưng đoạn scan, tức hiệu năng, rất khác nhau.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><span class="fig-num">Hình 2.4</span><h4>Các mẫu LIKE khác nhau</h4><span class="tag">Hình trong sách</span></div>
+        <svg class="sk" data-fig="24" role="img" aria-label="Ba cột cùng một danh sách 18 tên bắt đầu bằng WI. LIKE WI%ND scan cả 18 tên, WIN%D scan 2 tên, WINA% scan 1 tên; cả ba đều lấy ra WINAND."></svg>
+        <figcaption>Cả ba mẫu cùng lấy ra WINAND. Tiền tố càng dài, đoạn scan càng ngắn: 18, 2 rồi 1 entry.</figcaption>
+      </figure>
+      <p>Biểu thức đầu có hai ký tự trước wildcard. Chúng giới hạn đoạn scan còn 18 row; chỉ một row khớp cả biểu thức, 17 row còn lại bị đọc rồi bỏ. Biểu thức thứ hai có tiền tố dài hơn, thu hẹp đoạn scan còn hai row: database chỉ đọc thêm một row không liên quan. Biểu thức cuối không có filter predicate nào: database chỉ đọc đúng entry khớp.</p>
+      <p>Trên table thật có <span data-fact="c:like_wi">145</span> tên bắt đầu bằng WI, <span data-fact="c:like_win">8</span> tên bắt đầu bằng WIN và <span data-fact="c:like_wina">2</span> tên bắt đầu bằng WINA. PostgreSQL đổi tiền tố thành một khoảng (ví dụ <code>~&gt;=~ 'WI' AND ~&lt;~ 'WJ'</code>) để làm <code>index cond</code>, và giữ cả biểu thức LIKE làm <code>filter</code>. Số block đọc giảm theo độ dài tiền tố:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Block đọc theo độ dài tiền tố</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="like"></div>
+      </figure>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Chỉ phần trước wildcard đầu tiên làm access predicate. Các ký tự còn lại không thu hẹp đoạn scan: entry không khớp chỉ bị loại khỏi kết quả.
+      </aside>
+      <p>Trường hợp ngược lại cũng có: biểu thức LIKE bắt đầu bằng wildcard. Nó không thể làm access predicate. Nếu không có điều kiện nào khác cung cấp access predicate, database phải scan cả table. <code>LIKE '%NAND'</code> trên PostgreSQL là <code data-fact="p:like-lead:op">Seq Scan</code>, <span data-fact="p:like-lead:blocks">957</span> block.</p>
+      <aside class="box">
+        <b class="k">Mẹo</b>
+        Tránh biểu thức LIKE có wildcard ở đầu (ví dụ <code>'%TERM'</code>).
+      </aside>
+      <p>Vị trí wildcard ảnh hưởng tới việc dùng index, ít nhất là trên lý thuyết. Thực tế, khi mẫu tìm được truyền bằng bind parameter, optimizer dựng một generic plan và phải đoán đa số lần chạy có wildcard ở đầu hay không. Phần lớn database giả định là không. PostgreSQL thì ngược lại: nó giả định có wildcard ở đầu và không dùng index. Thử với giá trị <code>'WINA%'</code>, vốn chỉ cần đọc <span data-fact="p:like-wina:blocks">5</span> block: với bind parameter, plan là <code data-fact="p:like-bind:op">Seq Scan</code>, <span data-fact="p:like-bind:blocks">957</span> block.</p>
+      <p>Với PostgreSQL, cách duy nhất để LIKE đi qua index là cho optimizer thấy mẫu tìm thật. Nếu viết thẳng mẫu vào câu SQL thay vì dùng bind parameter, phải có biện pháp khác để chống SQL injection. Một cách hiệu quả, an toàn và portable là cố ý che khuất điều kiện LIKE; mục Combining Columns ở cuối chương giải thích.</p>
+      <aside class="box">
+        <b class="k">Đánh dấu LIKE dùng cho full-text search</b>
+        Khi dùng LIKE để tìm full-text, có thể tách wildcard khỏi từ khóa: <code>WHERE text_column LIKE '%' || ? || '%'</code>. Wildcard được viết thẳng vào câu SQL, từ khóa dùng bind parameter, và database tự ghép bằng toán tử <code>||</code>. Biểu thức cuối luôn bắt đầu bằng wildcard, nhưng tiếc là database không nhận ra điều đó. Nếu không có access path nào khác, có thể dùng giải pháp full-text riêng: PostgreSQL có toán tử <code>@@</code> (Full Text Search), hoặc extension WildSpeed, lưu văn bản ở mọi phép xoay để ký tự nào cũng có lúc đứng đầu, đổi lại tốn rất nhiều chỗ.
+      </aside>
+      <aside class="box">
+        <b class="k">Thử nghĩ</b>
+        Làm sao index được một tìm kiếm LIKE chỉ có một wildcard ở đầu (<code>'%TERM'</code>)?
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Index Merge: hai điều kiện khoảng độc lập thì không index nào làm hoàn hảo</h3>
+      <p>Một câu hỏi rất hay gặp: nên tạo mỗi column một index, hay một index cho mọi column trong WHERE? Phần lớn trường hợp câu trả lời rất đơn giản: một index nhiều column tốt hơn. Dù vậy, có những query mà không index nào làm hoàn hảo được, định nghĩa thế nào cũng vậy. Ví dụ query có hai điều kiện khoảng độc lập:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, date_of_birth
+  FROM employees
+ WHERE UPPER(last_name) &lt; ?
+   AND date_of_birth    &lt; ?;</code></pre>
+      <p>Không thể định nghĩa một B-tree index hỗ trợ query này mà không có filter predicate. Để hiểu, chỉ cần nhớ: index là một linked list. Định nghĩa index là <code>(UPPER(last_name), date_of_birth)</code> thì danh sách bắt đầu từ A và kết thúc ở Z; ngày sinh chỉ được xét khi hai người trùng tên. Định nghĩa ngược lại thì danh sách bắt đầu từ người lớn tuổi nhất và kết thúc ở người trẻ nhất; tên chỉ ảnh hưởng chút ít tới thứ tự.</p>
+      <p>Xoay định nghĩa index thế nào đi nữa, các entry vẫn luôn xếp dọc một chuỗi: một đầu là entry nhỏ, đầu kia là entry lớn. Nên một index chỉ hỗ trợ được một điều kiện khoảng làm access predicate. Hỗ trợ hai điều kiện khoảng độc lập cần một trục thứ hai, như bàn cờ. Query trên sẽ khớp mọi entry ở một góc bàn cờ. Nhưng index không giống bàn cờ, nó giống một sợi xích. Không có góc nào cả.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Một góc trên bàn cờ, rải rác trên chuỗi</h4><span class="tag">Dữ liệu minh họa</span></div>
+        <svg class="sk" data-fig="board" role="img" aria-label="Bốn mươi người trên mặt phẳng tên và năm sinh; những người thỏa cả hai điều kiện nằm gọn ở một góc. Bên dưới, cùng những người đó trên chuỗi index xếp theo tên: họ nằm rải rác trong đoạn scan."></svg>
+        <figcaption>Hai điều kiện khoảng gom các row khớp vào một góc của mặt phẳng. Trên chuỗi index, chỉ điều kiện tên giới hạn được đoạn scan; điều kiện năm sinh chỉ lọc bên trong đoạn đó.</figcaption>
+      </figure>
+      <p>Tất nhiên có thể chấp nhận filter predicate và vẫn dùng index nhiều column; nhiều khi đó là giải pháp tốt nhất. Khi đó column chọn lọc hơn nên đứng đầu, để nó được dùng làm access predicate. Có lẽ đây là gốc của lời đồn "column chọn lọc nhất đứng đầu", nhưng quy tắc này chỉ đúng khi không tránh được filter predicate.</p>
+      <p>Cách khác là dùng hai index riêng, mỗi column một index. Khi đó database phải scan cả hai index trước, rồi kết hợp kết quả. Riêng việc tra index hai lần đã tốn công hơn, vì phải duyệt hai tree. Thêm nữa, database cần nhiều bộ nhớ và CPU để kết hợp các kết quả trung gian.</p>
+      <aside class="box">
+        <b class="k">Lưu ý</b>
+        Scan một index nhanh hơn scan hai index.
+      </aside>
+      <p>Database kết hợp index bằng hai cách. Cách thứ nhất là index join (chương 4 giải thích các thuật toán liên quan). Cách thứ hai mượn từ data warehouse. Data warehouse là nơi của ad-hoc query: vài cú nhấp chuột là ghép được điều kiện tùy ý, không thể đoán trước tổ hợp column nào sẽ xuất hiện trong WHERE, nên indexing như đã nói gần như không làm được. Data warehouse dùng một loại index riêng: <b>bitmap index</b>. Ưu điểm của bitmap index là ghép với nhau rất dễ, nên index riêng từng column vẫn cho hiệu năng khá. Ngược lại, nếu biết trước query để tạo một B-tree index nhiều column đúng ý, nó vẫn nhanh hơn ghép nhiều bitmap index.</p>
+      <p>Điểm yếu lớn nhất của bitmap index là khả năng mở rộng của insert, update và delete tệ tới mức buồn cười: ghi đồng thời gần như không thể. Data warehouse không gặp vấn đề vì các tiến trình nạp dữ liệu chạy lần lượt. Trong ứng dụng trực tuyến, bitmap index gần như vô dụng.</p>
+      <aside class="box important">
+        <b class="k">Quan trọng</b>
+        Bitmap index gần như không dùng được cho xử lý giao dịch trực tuyến (OLTP).
+      </aside>
+      <p>Nhiều database, trong đó có PostgreSQL, có giải pháp lai giữa B-tree và bitmap index. Khi không có access path tốt hơn, chúng chuyển kết quả của vài lần B-tree scan thành cấu trúc bitmap trong bộ nhớ, rồi ghép các bitmap đó rất hiệu quả. Bitmap không được lưu lại mà bỏ đi sau câu lệnh, nên tránh được vấn đề ghi kém. Đổi lại, nó cần nhiều bộ nhớ và CPU. Xét cho cùng, đây là hành động tuyệt vọng của optimizer.</p>
+      <p>Trên table thật, với <code>UPPER(last_name) &lt; 'B'</code> (<span data-fact="c:merge_name">3.789</span> row) và sinh trước 1953 (<span data-fact="c:merge_dob">5.458</span> row), khớp cả hai là <span data-fact="c:merge_both">198</span> row. Với hai index riêng, PostgreSQL tự chọn chỉ dùng index ngày sinh và filter tên. Ép nó ghép hai index thì thấy <code>BitmapAnd</code>, chính là cách lai ở trên. Một index hai column thì scan một lần.</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Số block mỗi cách phải đọc</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="merge"></div>
+      </figure>
+      <p>Cả ba cách đều có filter predicate, đúng như lập luận ở trên. Trên table cỡ này, số block của ba cách khá gần nhau. Ghép bằng bitmap đọc nhiều nhất, vì phải duyệt hai tree.</p>
+    </div>
+  </section>
+
+  <!-- ===================== Partial Indexes ===================== -->
+  <section id="partial">
+    <div class="reveal">
+      <h2>Partial Indexes</h2>
+      <p class="sub">Tới giờ ta chỉ chọn column nào đưa vào index. Partial index (PostgreSQL) hay filtered index (SQL Server) cho chọn cả row nào được index.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Chỉ index những row thật sự được tìm</h3>
+      <p>Partial index có ích cho các điều kiện WHERE hay dùng với giá trị cố định, như mã trạng thái trong ví dụ sau:</p>
+      <pre class="sql"><code>SELECT message
+  FROM messages
+ WHERE processed = 'N'
+   AND receiver  = ?;</code></pre>
+      <p>Query kiểu này rất hay gặp trong hệ thống hàng đợi: lấy mọi tin chưa xử lý của một người nhận. Tin đã xử lý hiếm khi cần tới; nếu cần thì thường được tìm bằng điều kiện cụ thể hơn, như primary key. Table <code>messages</code> ở đây có <span data-fact="s:rows">200.000</span> tin, trong đó <span data-fact="s:todo">2.000</span> tin chưa xử lý.</p>
+      <p>Có thể tối ưu query này bằng một index hai column. Chỉ xét query này thì thứ tự column không quan trọng, vì không có điều kiện khoảng.</p>
+      <pre class="sql"><code>CREATE INDEX messages_todo
+          ON messages (receiver, processed);</code></pre>
+      <p>Index làm đúng việc, nhưng nó chứa rất nhiều row không bao giờ được tìm: mọi tin đã xử lý. Nhờ khả năng mở rộng theo logarit, query vẫn rất nhanh, dù index phí nhiều chỗ. Với partial index, có thể giới hạn index chỉ chứa tin chưa xử lý. Cú pháp đơn giản bất ngờ: một mệnh đề WHERE.</p>
+      <pre class="sql"><code>CREATE INDEX messages_todo
+          ON messages (receiver)
+       WHERE processed = 'N';</code></pre>
+      <p>Index chỉ chứa các row thỏa WHERE của nó. Ở đây còn bỏ được cả column <code>processed</code>, vì nó luôn là <code>'N'</code>. Vậy index nhỏ đi theo hai chiều: chiều dọc vì ít row hơn, chiều ngang vì bớt một column. Query dùng index nào cũng chỉ đọc <span data-fact="p:partial-todo:blocks">4</span> block, nhưng kích thước hai index khác hẳn:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Kích thước hai index</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="partial"></div>
+      </figure>
+      <p>Index vì vậy rất nhỏ. Với một hàng đợi, kích thước index thậm chí có thể không đổi trong khi table lớn lên mãi: index không chứa mọi tin, chỉ chứa tin chưa xử lý.</p>
+      <p>WHERE của partial index có thể phức tạp tùy ý. Giới hạn cơ bản duy nhất là về function: chỉ dùng được function deterministic, như mọi chỗ khác trong định nghĩa index. SQL Server có luật chặt hơn, không cho function hay toán tử <code>OR</code> trong điều kiện của index. Database dùng được partial index mỗi khi điều kiện trong WHERE của nó xuất hiện trong query.</p>
+      <aside class="box">
+        <b class="k">Thử nghĩ</b>
+        Index nhỏ nhất có thể cho query <code>SELECT message FROM messages WHERE processed = 'N'</code> có gì đặc biệt?
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===================== NULL in the Oracle Database ===================== -->
+  <section id="null">
+    <div class="reveal">
+      <h2>NULL in the Oracle Database</h2>
+      <p class="sub">Mục này của sách nói về những điểm lạ của Oracle với NULL. PostgreSQL không có các điểm lạ đó, nên ở đây chỉ tóm tắt.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Oracle không index row toàn NULL; PostgreSQL thì có</h3>
+      <p>Theo chuẩn SQL, NULL không phải một giá trị mà là chỗ giữ cho giá trị bị thiếu hoặc chưa biết. Phải viết <code>IS NULL</code> chứ không phải <code>= NULL</code>. Oracle thêm vài điểm lạ: nó coi chuỗi rỗng là NULL (không thể lưu chuỗi rỗng vào <code>VARCHAR2</code>), và có lúc lại coi NULL như chuỗi rỗng khi nối chuỗi.</p>
+      <p>Với index, Oracle không đưa vào index những row mà mọi column được index đều NULL. Nên mọi index của Oracle giống một partial index có <code>WHERE A IS NOT NULL OR B IS NOT NULL …</code>. Hệ quả: index một column trên <code>date_of_birth</code> không hỗ trợ được <code>WHERE date_of_birth IS NULL</code>. Mẹo của sách là thêm vào index một column không bao giờ NULL (có <code>NOT NULL</code> constraint) hoặc một hằng số, ví dụ <code>(date_of_birth, '1')</code>. Database phải <em>chắc chắn</em> column đó không thể NULL: thiếu <code>NOT NULL</code> constraint, hoặc dùng function tự viết mà database không biết có trả NULL hay không, là index lại không dùng được. Sách cũng chỉ cách lợi dụng đặc điểm này để giả lập partial index trên Oracle: index một function trả NULL cho các row không muốn index.</p>
+      <p>PostgreSQL không có những đặc điểm đó. Chuỗi rỗng khác NULL. Index B-tree lưu cả row có NULL, và <code>IS NULL</code> hay <code>IS NOT NULL</code> dùng được index B-tree (<a href="https://www.postgresql.org/docs/current/indexes-types.html">tài liệu PostgreSQL</a>). Partial index thì PostgreSQL có sẵn, như mục trước.</p>
+    </div>
+  </section>
+
+  <!-- ===================== Obfuscated Conditions ===================== -->
+  <section id="obfuscated">
+    <div class="reveal">
+      <h2>Obfuscated Conditions</h2>
+      <p class="sub">Obfuscated condition là WHERE được viết theo cách ngăn index được dùng đúng. Mục này là bộ sưu tập các anti-pattern mà developer nào cũng nên biết và tránh.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Date Types: đừng bọc column ngày trong function, hãy dùng điều kiện khoảng</h3>
+      <p>Phần lớn các kiểu che khuất liên quan tới kiểu ngày. Oracle đặc biệt dễ dính, vì nó chỉ có một kiểu <code>DATE</code> luôn kèm giờ. Kiểu <code>timestamp</code> của PostgreSQL cũng kèm giờ. Các ví dụ dưới dùng table <code>sales</code>: 100.000 lần bán trong 2023–2024, <code>sale_date</code> có cả giờ phút, và có index trên <code>sale_date</code>.</p>
+      <p>Thói quen phổ biến là cắt bỏ phần giờ bằng function (<code>TRUNC</code> ở Oracle, <code>date_trunc</code> ở PostgreSQL), ở cả hai vế, ví dụ để tìm doanh số "hôm qua" (ở đây cố định là ngày 14/6/2024):</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales
+ WHERE date_trunc('day', sale_date) = date_trunc('day', TIMESTAMP '2024-06-14 09:00');</code></pre>
+      <p>Câu lệnh hoàn toàn hợp lệ và đúng, nhưng không dùng được index trên <code>sale_date</code>: plan là <code data-fact="p:date-trunc:op">Seq Scan</code>. Giống hệt mục Case-Insensitive Search: <code>date_trunc('day', sale_date)</code> là thứ khác hẳn <code>sale_date</code>; function là hộp đen với database. Có giải pháp khá đơn giản là function-based index trên <code>date_trunc('day', sale_date)</code>. Nhưng khi đó phải luôn viết <code>date_trunc</code> trong WHERE. Lúc có lúc không thì cần tới hai index.</p>
+      <p>Vấn đề cũng xảy ra với database có kiểu ngày thuần, khi tìm theo một khoảng dài hơn, ví dụ query MySQL dùng <code>DATE_FORMAT(sale_date, "%Y-%M")</code> để so tháng. Lại là một query đúng có cùng vấn đề, và MySQL không có function-based index. Giải pháp chung, chạy trên mọi database, là dùng điều kiện khoảng rõ ràng:</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales
+ WHERE sale_date BETWEEN quarter_begin(?)
+                     AND quarter_end(?);</code></pre>
+      <p>Nếu đã làm bài tập ở mục User-Defined Functions, bạn sẽ nhận ra pattern này: tìm người 42 tuổi bằng một khoảng ngày sinh. Một index thường trên <code>sale_date</code> là đủ. <code>quarter_begin</code> và <code>quarter_end</code> tính ngày biên. Vì <code>BETWEEN</code> luôn bao gồm hai biên, <code>quarter_end</code> phải trả về thời điểm ngay trước ngày đầu của quý sau. Đây là bản PostgreSQL trong sách:</p>
+      <pre class="sql"><code>CREATE FUNCTION quarter_begin(dt timestamp with time zone)
+RETURNS timestamp with time zone AS $$
+BEGIN
+    RETURN date_trunc('quarter', dt);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION quarter_end(dt timestamp with time zone)
+RETURNS timestamp with time zone AS $$
+BEGIN
+   RETURN   date_trunc('quarter', dt)
+          + interval '3 month'
+          - interval '1 microsecond';
+END;
+$$ LANGUAGE plpgsql;</code></pre>
+      <p>Chạy y nguyên trên PostgreSQL <span data-fact="version">18</span> thì gặp một chi tiết sách không nhắc: function plpgsql không khai báo gì thêm sẽ là <code>VOLATILE</code>, tức có thể trả kết quả khác ở mỗi lần gọi. PostgreSQL vì thế gọi lại nó cho từng row, và không dùng điều kiện làm <code>index cond</code>: plan là <code data-fact="p:date-quarter-volatile:op">Seq Scan</code>, <span data-fact="p:date-quarter-volatile:blocks">862</span> block.</p>
+      <p>Khai báo hai function là <code>STABLE</code> (kết quả không đổi trong một câu lệnh) thì planner tính trước ngày biên và dùng index (<code data-fact="p:date-quarter:op">Index Scan</code>). Điều mục này muốn chỉ ra là index dùng được. Còn nhanh hay không thì tùy lượng dữ liệu: một quý là khoảng một phần tám table, <span data-fact="p:date-quarter:rows">12.473</span> row, và plan này lấy từng row riêng lẻ, <span data-fact="p:date-quarter:blocks">12.501</span> lần đọc block, so với <span data-fact="p:date-quarter-volatile:blocks">862</span> block của full table scan. Lại là hai nguyên liệu của index chậm ở mục Slow Indexes.</p>
+      <pre class="sql"><code>ALTER FUNCTION quarter_begin(timestamp with time zone) STABLE;
+ALTER FUNCTION quarter_end(timestamp with time zone) STABLE;</code></pre>
+      <p>Có thể viết các function phụ tương tự cho các kỳ khác; phần lớn sẽ đơn giản hơn, nhất là khi dùng <code>&gt;=</code> và <code>&lt;</code> thay cho <code>BETWEEN</code>. Cũng có thể tính ngày biên trong ứng dụng.</p>
+      <aside class="box important">
+        <b class="k">Mẹo</b>
+        Viết query cho một khoảng thời gian liên tục bằng điều kiện khoảng rõ ràng, kể cả khi chỉ là một ngày: <code>sale_date &gt;= ngày AND sale_date &lt; ngày + 1</code>.
+      </aside>
+      <p>Một kiểu che khuất phổ biến khác là so sánh ngày dưới dạng chuỗi, như ví dụ PostgreSQL trong sách:</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales
+ WHERE TO_CHAR(sale_date, 'YYYY-MM-DD') = '2024-06-14';</code></pre>
+      <p>Vấn đề lại là chuyển đổi column. Người ta hay viết kiểu này vì tin rằng chỉ truyền được số và chuỗi vào database. Thực ra bind parameter hỗ trợ mọi kiểu dữ liệu, ví dụ truyền thẳng một object <code>java.util.Date</code>. Đó thêm một lợi ích của bind parameter. Nếu không làm vậy được, hãy chuyển đổi giá trị tìm kiếm thay vì column, ví dụ <code>sale_date = TO_DATE('2024-06-14', 'YYYY-MM-DD')</code>: database chỉ chuyển chuỗi đầu vào một lần, thay vì chuyển mọi ngày trong table. Nhưng nếu <code>sale_date</code> có phần giờ, như ở đây, cách đó sẽ sai kết quả. Khi đó phải dùng điều kiện khoảng rõ ràng:</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales
+ WHERE sale_date &gt;= DATE '2024-06-14'
+   AND sale_date &lt;  DATE '2024-06-14' + INTERVAL '1' DAY;</code></pre>
+      <p>Đặt ba cách viết cạnh nhau, cùng tìm doanh số một ngày:</p>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Cùng một ngày, ba cách viết</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="date"></div>
+      </figure>
+      <aside class="box">
+        <b class="k">LIKE trên kiểu ngày</b>
+        Kiểu che khuất khó thấy nhất: <code>sale_date LIKE SYSDATE</code>. Không có function nào, nhưng LIKE bắt so sánh chuỗi. Tùy database, nó báo lỗi hoặc chuyển kiểu ngầm ở cả hai vế, và chuyển kiểu ngầm chặn index như mọi function khác. Oracle chuyển kiểu ngầm. PostgreSQL báo lỗi: <code data-fact="e:date_like">operator does not exist: timestamp without time zone ~~ timestamp with time zone</code>.
+      </aside>
+    </div>
+
+    <div class="step reveal">
+      <h3>Numeric Strings: so chuỗi với chuỗi, đừng chuyển column sang số</h3>
+      <p>Numeric string là số được lưu trong column kiểu text. Đó là thói quen rất tệ, nhưng không tự động làm index vô dụng, nếu luôn coi nó là chuỗi. Các ví dụ dùng table <code>numbers</code> (sách gọi là <code>table_name</code>) có index trên <code>numeric_string</code>:</p>
+      <pre class="sql"><code>SELECT * FROM numbers WHERE numeric_string = '42';</code></pre>
+      <p>Tất nhiên câu này dùng được index (<code data-fact="p:num-string:op">Index Scan</code>, <span data-fact="p:num-string:blocks">3</span> block). Nhưng nếu so với một số (để ý: không có dấu nháy), <code>WHERE numeric_string = 42</code>, thì có database báo lỗi, như PostgreSQL:</p>
+      <pre class="sql err"><code>SELECT * FROM numbers WHERE numeric_string = 42;
+-- ERROR: <span data-fact="e:numeric_string">operator does not exist: text = integer</span></code></pre>
+      <p>Nhiều database khác thì thêm ngầm một phép chuyển kiểu: <code>WHERE TO_NUMBER(numeric_string) = 42</code>. Lại cùng vấn đề cũ: index trên <code>numeric_string</code> không dùng được vì có function. Viết rõ phép chuyển đó trên PostgreSQL, <code>WHERE numeric_string::int = 42</code>, thì plan là <code data-fact="p:num-string-cast:op">Seq Scan</code>.</p>
+      <p>Giải pháp cũng như trước: đừng chuyển column, hãy chuyển giá trị tìm kiếm: <code>WHERE numeric_string = TO_CHAR(42)</code>.</p>
+      <p>Sao database không tự làm vậy? Vì chuyển chuỗi thành số luôn cho một kết quả duy nhất, còn chiều ngược lại thì không. Một số viết dưới dạng chữ có thể chứa khoảng trắng, dấu câu, số 0 ở đầu: cùng một giá trị có thể là <code>42</code>, <code>042</code>, <code>0042</code>… Database không biết column dùng định dạng nào, nên làm theo chiều đơn nghĩa: chuyển chuỗi thành số. <code>TO_CHAR(42)</code> chỉ cho một cách viết, nên chỉ khớp <code>'42'</code>; <code>TO_NUMBER</code> thì khớp tất cả. Hai cách không chỉ khác hiệu năng mà khác cả ý nghĩa.</p>
+      <p>Numeric string nói chung là rắc rối: gây vấn đề hiệu năng vì chuyển kiểu ngầm, và có nguy cơ lỗi chuyển đổi khi có giá trị không phải số. Chỉ một giá trị sai trong table là query đơn giản nhất, không có function nào trong WHERE, cũng có thể dừng giữa chừng vì lỗi chuyển đổi.</p>
+      <aside class="box important">
+        <b class="k">Mẹo</b>
+        Dùng kiểu số để lưu số.
+      </aside>
+      <p>Chiều ngược lại thì không có vấn đề: <code>WHERE numeric_number = '42'</code>. Database chuyển chuỗi thành số một cách nhất quán, không áp function lên column, nên index thường vẫn dùng được. Trên PostgreSQL: <code data-fact="p:num-number-string:op">Index Scan</code>. Nhưng vẫn có thể tự tay chuyển sai chiều, <code>WHERE TO_CHAR(numeric_number) = '42'</code>, và index lại không dùng được: <code data-fact="p:num-number-cast:op">Seq Scan</code>.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Combining Columns: thêm điều kiện thừa trên column quan trọng nhất</h3>
+      <p>Kiểu che khuất này ảnh hưởng tới concatenated index. Ví dụ lại về ngày giờ, nhưng theo chiều ngược: ngày và giờ nằm ở hai column, và query ghép chúng lại để lọc theo khoảng. Ở đây là <code>sale_day</code> và <code>sale_time</code> của table <code>sales</code>, có concatenated index trên <code>(sale_day, sale_time)</code>. Query lấy mọi lần bán trong 24 giờ gần nhất ("bây giờ" cố định là 31/12/2024 00:00, cuối dữ liệu):</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales
+ WHERE sale_day + sale_time &gt; TIMESTAMP '2024-12-31 00:00' - INTERVAL '1' DAY;</code></pre>
+      <p>Query không dùng đúng được index <code>(sale_day, sale_time)</code>, vì nó không tìm theo các column được index mà theo dữ liệu suy ra từ chúng. Có thể tránh bằng một kiểu dữ liệu chứa cả ngày lẫn giờ (như <code>sale_date</code> ở trên), nhưng thường không đổi table được khi gặp vấn đề này. Function-based index là lựa chọn kế tiếp, với mọi nhược điểm đã nói.</p>
+      <p>Vẫn có cách viết query để database dùng index <code>(sale_day, sale_time)</code> với access predicate, ít nhất một phần: thêm một điều kiện trên <code>sale_day</code>.</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales
+ WHERE sale_day + sale_time &gt; TIMESTAMP '2024-12-31 00:00' - INTERVAL '1' DAY
+   AND sale_day &gt;= DATE '2024-12-30';</code></pre>
+      <p>Điều kiện mới hoàn toàn thừa, nhưng là một điều kiện thẳng trên <code>sale_day</code>, dùng làm access predicate được. Kỹ thuật này không hoàn hảo, nhưng thường là xấp xỉ đủ tốt.</p>
+      <aside class="box important">
+        <b class="k">Mẹo</b>
+        Khi một điều kiện khoảng ghép nhiều column, thêm một điều kiện thừa trên column quan trọng nhất.
+      </aside>
+      <p>Với PostgreSQL, sách khuyên dùng cú pháp row values: so sánh cả cặp <code>(sale_day, sale_time)</code> một lần. Điều kiện chính xác, không cần điều kiện thừa, và toàn bộ là <code>index cond</code>:</p>
+      <pre class="sql"><code>SELECT *
+  FROM sales
+ WHERE (sale_day, sale_time) &gt; (DATE '2024-12-30', TIME '00:00');</code></pre>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Ba cách lọc 24 giờ gần nhất</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="combine"></div>
+      </figure>
+      <p>Kỹ thuật điều kiện thừa cũng dùng được khi ngày giờ lưu trong column text, miễn là định dạng sắp theo chữ đúng với thứ tự thời gian, ví dụ ISO 8601 (<code>YYYY-MM-DD HH:MM:SS</code>). Vấn đề điều kiện khoảng trên nhiều column sẽ gặp lại ở mục Paging Through Results, với cùng cách xấp xỉ.</p>
+      <p>Đôi khi lại có trường hợp ngược: muốn cố ý che khuất một điều kiện để nó không còn được dùng làm access predicate. Ví dụ query <code>WHERE subsidiary_id = ? AND last_name LIKE ?</code>, với một index trên <code>subsidiary_id</code> và một index trên <code>last_name</code>. Index nào tốt hơn? Không biết vị trí wildcard thì không trả lời được, và optimizer chỉ còn cách đoán. Nếu <em>biết</em> mẫu tìm luôn có wildcard ở đầu, có thể cố ý che khuất điều kiện LIKE để optimizer không xét index trên <code>last_name</code> nữa:</p>
+      <pre class="sql"><code>SELECT last_name, first_name, employee_id
+  FROM employees
+ WHERE subsidiary_id = ?
+   AND last_name || '' LIKE ?;</code></pre>
+      <p>Chỉ cần nối thêm một chuỗi rỗng vào <code>last_name</code>. Nhưng đây là lựa chọn cuối cùng, chỉ dùng khi thật sự cần.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Smart Logic: dùng dynamic SQL cho WHERE thay đổi</h3>
+      <p>Một tính năng then chốt của database SQL là ad-hoc query: chạy query mới bất cứ lúc nào. Điều này làm được vì optimizer chạy lúc runtime: phân tích mỗi câu lệnh khi nhận được và dựng ngay một plan hợp lý. Chi phí tối ưu lúc runtime có thể giảm bằng bind parameter. Tóm lại: database được tối ưu cho dynamic SQL, nên cứ dùng khi cần.</p>
+      <p>Dù vậy, có một thói quen phổ biến là tránh dynamic SQL để dùng static SQL, thường vì lời đồn "dynamic SQL chậm". Thói quen này gây hại nhiều hơn lợi nếu database dùng shared execution plan cache như DB2, Oracle hay SQL Server. Ví dụ một ứng dụng tìm trong <code>employees</code> theo subsidiary, employee id và họ (không phân biệt hoa thường), theo tổ hợp tùy ý. Vẫn viết được một query duy nhất cho mọi trường hợp bằng logic "thông minh":</p>
+      <pre class="sql"><code>SELECT first_name, last_name, subsidiary_id, employee_id
+  FROM employees
+ WHERE ( subsidiary_id    = :sub_id OR :sub_id IS NULL )
+   AND ( employee_id      = :emp_id OR :emp_id IS NULL )
+   AND ( UPPER(last_name) = :name   OR :name   IS NULL );</code></pre>
+      <p>Mọi filter đều viết sẵn trong câu lệnh. Filter nào không cần thì truyền NULL thay cho giá trị: phép <code>OR</code> sẽ tắt điều kiện đó. Đây là câu SQL hoàn toàn hợp lý, cách dùng NULL còn đúng với logic ba trị của SQL. Vậy mà nó là một trong những anti-pattern hiệu năng tệ nhất. Database không thể tối ưu plan cho một filter cụ thể, vì filter nào cũng có thể bị tắt lúc chạy. Nó phải chuẩn bị cho trường hợp xấu nhất, khi mọi filter đều tắt. Ở PostgreSQL, generic plan của câu lệnh đã <code>PREPARE</code> là <code data-fact="p:smart-generic:op">Seq Scan</code>, dù có index cho subsidiary, employee id và <code>UPPER(last_name)</code>.</p>
+      <p>Không phải database không giải được logic "thông minh" này. Nó dựng generic plan vì dùng bind parameter, để cache rồi tái dùng với giá trị khác sau này. Nếu viết thẳng giá trị vào câu SQL, optimizer chọn đúng index cho filter đang bật:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, subsidiary_id, employee_id
+  FROM employees
+ WHERE ( subsidiary_id    = NULL     OR NULL IS NULL )
+   AND ( employee_id      = NULL     OR NULL IS NULL )
+   AND ( UPPER(last_name) = 'WINAND' OR 'WINAND' IS NULL );</code></pre>
+      <p>Nhưng đó không phải giải pháp. Nó chỉ chứng minh database giải được các điều kiện này.</p>
+      <aside class="box">
+        <b class="k">Cảnh báo</b>
+        Viết thẳng giá trị làm ứng dụng dễ bị SQL injection và có thể gây vấn đề hiệu năng vì tốn thêm công tối ưu.
+      </aside>
+      <p>Giải pháp hiển nhiên cho query động là dynamic SQL. Theo nguyên tắc KISS, chỉ nói với database đúng điều cần lúc này, không gì khác. Và vẫn dùng bind parameter:</p>
+      <pre class="sql"><code>SELECT first_name, last_name, subsidiary_id, employee_id
+  FROM employees
+ WHERE UPPER(last_name) = :name;</code></pre>
+      <figure class="fig wide">
+        <div class="fig-head"><h4>Ba cách viết cùng một tìm kiếm</h4><span class="tag real">Đo thực tế</span></div>
+        <div data-bars="smart"></div>
+      </figure>
+      <aside class="box important">
+        <b class="k">Mẹo</b>
+        Dùng dynamic SQL khi cần WHERE thay đổi. Vẫn dùng bind parameter khi sinh dynamic SQL, nếu không thì lời đồn "dynamic SQL chậm" thành sự thật.
+      </aside>
+      <p>Vấn đề này rất phổ biến. Mọi database có shared execution plan cache đều có tính năng để đối phó, thường kèm vấn đề và lỗi mới: Oracle có bind peeking và adaptive cursor sharing, SQL Server có parameter sniffing và các hint <code>RECOMPILE</code>, <code>OPTIMIZE FOR</code>. MySQL không có plan cache nên không gặp vấn đề này. Với PostgreSQL, plan cache chỉ áp dụng cho statement đang mở, tức khi giữ <code>PreparedStatement</code> mở; driver JDBC chỉ bật cache từ lần chạy thứ năm. Ở trên, mình ép PostgreSQL dùng generic plan (<code>plan_cache_mode = force_generic_plan</code>) để thấy plan mà cache sẽ dùng. Cách chắc chắn nhất để có plan tốt nhất là không đưa filter thừa vào câu SQL.</p>
+    </div>
+
+    <div class="step reveal">
+      <h3>Math: database không giải phương trình</h3>
+      <p>Còn một lớp che khuất nữa, khá khéo, cũng ngăn index được dùng đúng. Thay vì biểu thức logic, nó dùng phép tính. Câu sau có dùng được index trên <code>numeric_number</code> không?</p>
+      <pre class="sql"><code>SELECT numeric_number
+  FROM numbers
+ WHERE numeric_number - 1000 &gt; 99000;</code></pre>
+      <p>Tương tự, câu sau có dùng được index trên <code>a</code> và <code>b</code> không, thứ tự tùy chọn?</p>
+      <pre class="sql"><code>SELECT a, b
+  FROM numbers
+ WHERE 3*a + 5 = b;</code></pre>
+      <p>Thử nhìn từ góc khác: nếu bạn viết một database SQL, bạn có thêm một bộ giải phương trình không? Phần lớn các hãng nói "Không!", nên cả hai ví dụ đều không dùng index; PostgreSQL chạy <code data-fact="p:math-minus:op">Seq Scan</code> cho cả hai. Thậm chí có thể dùng phép tính để cố ý che khuất một điều kiện, như đã làm với LIKE ở trên: cộng thêm 0 là đủ, <code>WHERE numeric_number + 0 = ?</code>.</p>
+      <p>Dù vậy, vẫn index được các expression này bằng function-based index, nếu dùng phép tính khéo và biến đổi WHERE như một phương trình: chuyển các tham chiếu tới table sang một vế, hằng số sang vế kia, rồi tạo function-based index cho vế trái.</p>
+      <pre class="sql"><code>CREATE INDEX math ON numbers ((3*a - b));
+
+SELECT a, b
+  FROM numbers
+ WHERE 3*a - b = -5;</code></pre>
+      <p>Với index đó, PostgreSQL dùng được index: <code data-fact="p:math-ab-index:op">Bitmap Heap Scan</code>.</p>
+    </div>
+  </section>
+</div>
+
+<footer class="foot reveal">
+  <div class="foot-mark" role="img" aria-label="INDEX"><span>I</span><span>N</span><span>D</span><span>E</span><span>X</span></div>
+  <div class="foot-cols">
+    <div><h3>Chương</h3><ul><li><a href="ch1-anatomy-of-an-index.html">Giải phẫu một index</a></li><li><a href="ch2-the-where-clause.html">Mệnh đề WHERE</a></li><li><a href="ch3-performance-and-scalability.html">Hiệu năng và mở rộng</a></li><li><a href="ch4-the-join-operation.html">Phép JOIN</a></li></ul></div>
+    <div><h3>Thí nghiệm</h3><ul><li><a href="../sql/seed.sql">seed.sql</a></li><li><a href="../sql/benchmarks.sql">benchmarks.sql</a></li><li><a href="../sql/ch2-benchmarks.sql">ch2-benchmarks.sql</a></li><li><a href="../sql/blocks.sql">blocks.sql</a></li></ul></div>
+    <div><h3>Nguồn</h3><ul><li><a href="https://sql-performance-explained.com/">SQL Performance Explained</a></li><li><a href="https://use-the-index-luke.com/">Use The Index, Luke</a></li></ul></div>
+    <div><p>Mọi plan chạy trên PostgreSQL thật. Table employees có 100.000 row theo kịch bản sáp nhập của sách, sinh với seed cố định; chạy lại các file SQL sẽ ra cùng dữ liệu.</p><p class="credits">Ảnh: <a href="https://commons.wikimedia.org/wiki/File:National_Telephone_Directory_from_October_1896.jpg">“National Telephone Directory from October 1896”</a>, Robert-brook, <a href="https://creativecommons.org/publicdomain/zero/1.0/deed.en">CC0</a>; <a href="https://commons.wikimedia.org/wiki/File:Schlagwortkatalog.jpg">“Schlagwortkatalog”</a>, Dr. Marcus Gossler, <a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a>. Qua Wikimedia Commons.</p></div>
+  </div>
+  <div class="foot-last"><span>Nội dung tóm tắt từ sách của Markus Winand.</span><a class="top" href="#top">Lên đầu trang</a></div>
+</footer>
+
+<script src="../vendor/framer-motion-dom.js"></script>
+<script src="../vendor/rough.js"></script>
+<script type="module">import { site } from '../scripts/motion.js'; site();</script>
+<script type="module">
+  import { planTable, bars, blocks, fmt } from '../scripts/visualizations/plans.js';
+  import { fig21, rangeFig, likeFig, boardFig } from '../scripts/visualizations/book-figures.js';
+
+  const fig = k => document.querySelector(`[data-fig="${k}"]`);
+  fig21(fig('21'));
+  rangeFig(fig('22'), '2.2');
+  rangeFig(fig('23'), '2.3');
+  likeFig(fig('24'));
+  boardFig(fig('board'));
+
+  const ms = n => n.toLocaleString('vi-VN', { maximumFractionDigits: n < 0.1 ? 3 : 1 });
+  const get = f => fetch(`../data/${f}`).then(r => (r.ok ? (f.endsWith('.json') ? r.json() : r.text()) : Promise.reject(new Error(`${f}: ${r.status}`))));
+
+  try {
+    // Plan cần tải: plan vẽ thành bảng, plan có số trong chữ (p:<plan>:…), và plan của các biểu đồ cột.
+    const barPlans = ['concat-sub', 'concat-rev-sub', 'like-wi', 'like-win', 'like-wina', 'merge-two', 'merge-bitmap', 'merge-one',
+      'param-20', 'param-30', 'param-generic-20', 'param-generic-30', 'date-trunc', 'date-tochar', 'date-range',
+      'combine-bad', 'combine-redundant', 'combine-row', 'smart-generic', 'smart-literal', 'smart-dynamic'];
+    const ids = [...new Set([
+      ...[...document.querySelectorAll('[data-plan]')].map(el => el.dataset.plan),
+      ...[...document.querySelectorAll('[data-fact^="p:"]')].map(el => el.dataset.fact.split(':')[1]),
+      ...barPlans,
+    ])];
+    const [counts, errors, sizes, env, times, ...loaded] = await Promise.all([
+      get('ch2/counts.json'), get('ch2/errors.json'), get('ch2/partial-sizes.json'), get('environment.txt'), get('ch2/slow-times.json'),
+      ...ids.map(id => get(`ch2/${id}.json`)),
+    ]);
+    const plans = Object.fromEntries(ids.map((id, i) => [id, loaded[i][0]]));
+    for (const el of document.querySelectorAll('[data-plan]')) el.innerHTML = planTable(plans[el.dataset.plan]);
+
+    // Con số trong chữ: p:<plan>:<trường>, c:<counts>, e:<errors>, s:<partial-sizes>.
+    const flat = p => [p, ...(p.Plans ?? []).flatMap(flat)];
+    const planFact = (id, k) => {
+      const plan = plans[id], top = plan.Plan, nodes = flat(top), idx = nodes.find(n => n['Index Name']) ?? top;
+      return {
+        blocks: fmt(blocks(top)), rows: fmt(top['Actual Rows']), cost: fmt(Math.round(top['Total Cost'])),
+        removed: fmt(nodes.reduce((s, n) => s + (n['Rows Removed by Filter'] ?? 0), 0)),
+        idxest: fmt(idx['Plan Rows']), scanned: fmt(idx['Actual Rows'] + (idx['Rows Removed by Filter'] ?? 0)),
+        op: top['Node Type'],
+      }[k];
+    };
+    const fact = key => {
+      const [kind, a, b] = key.split(':');
+      if (kind === 'p') return plans[a] && planFact(a, b);
+      if (kind === 'c') return a === 'subsMinus' ? counts.subsidiaries - 1 : typeof counts[a] === 'number' ? fmt(counts[a]) : counts[a];
+      if (kind === 'e') return errors[a];
+      if (kind === 's') return fmt(sizes[a]);
+      if (kind === 't') return a === 'nameX' ? fmt(Math.round(times.nostats / times.name / 10) * 10) : ms(times[a]);
+      if (kind === 'version') return env.match(/PostgreSQL ([\d.]+)/)?.[1];
+    };
+    for (const el of document.querySelectorAll('[data-fact]')) el.textContent = fact(el.dataset.fact) ?? el.textContent;
+
+    // Biểu đồ so sánh số block (hoặc kích thước) giữa các plan.
+    const B = id => blocks(plans[id].Plan);
+    const blockBar = (label, id, hot) => ({ label, value: B(id), text: `${fmt(B(id))} block`, hot });
+    const draw = (k, items, note) => bars(document.querySelector(`[data-bars="${k}"]`), items, note);
+    draw('concat', [
+      blockBar('Đủ hai column của khóa', 'concat-full'),
+      blockBar('Chỉ subsidiary_id, PK cũ', 'concat-sub', true),
+      blockBar('Chỉ subsidiary_id, PK đảo', 'concat-rev-sub'),
+    ]);
+    const timeBar = (label, k, id, hot) => ({ label, value: times[k], text: `${ms(times[k])} ms · ${fmt(B(id))} block`, hot });
+    draw('slow', [
+      timeBar('Full table scan', 'seq', 'slow-seq', true),
+      timeBar('Index Scan, lấy từng row', 'indexscan', 'slow-indexscan'),
+      timeBar('Bitmap (PostgreSQL tự chọn)', 'nostats', 'slow-nostats'),
+      timeBar('Index trên last_name', 'name', 'slow-name'),
+    ]);
+    const est = id => plans[id].Plan['Plan Rows'];
+    const estBar = (label, id, real, hot) => ({ label, value: est(id), text: `ước tính ${fmt(est(id))} · thật ${fmt(real)}`, hot });
+    draw('param', [
+      estBar('Subsidiary 20, viết thẳng', 'param-20', counts.sub20),
+      estBar('Subsidiary 30, viết thẳng', 'param-30', counts.sub30),
+      estBar('Subsidiary 20, bind parameter', 'param-generic-20', counts.sub20, true),
+      estBar('Subsidiary 30, bind parameter', 'param-generic-30', counts.sub30, true),
+    ]);
+    draw('merge', [
+      blockBar('Hai index, PostgreSQL tự chọn', 'merge-two'),
+      blockBar('Hai index ghép bằng bitmap', 'merge-bitmap', true),
+      blockBar('Một index hai column', 'merge-one'),
+    ]);
+    draw('combine', [
+      blockBar('sale_day + sale_time', 'combine-bad', true),
+      blockBar('Thêm điều kiện thừa trên sale_day', 'combine-redundant'),
+      blockBar('Row values', 'combine-row'),
+    ]);
+    draw('like', [
+      blockBar("LIKE 'WI%ND'", 'like-wi', true),
+      blockBar("LIKE 'WIN%D'", 'like-win'),
+      blockBar("LIKE 'WINA%'", 'like-wina'),
+    ]);
+    const kb = n => `${fmt(Math.round(n / 1024))} KB`;
+    draw('partial', [
+      { label: '(receiver, processed)', value: sizes.full_bytes, text: kb(sizes.full_bytes), hot: true },
+      { label: 'Partial (receiver)', value: sizes.partial_bytes, text: kb(sizes.partial_bytes) },
+    ]);
+    draw('date', [
+      blockBar('date_trunc(sale_date)', 'date-trunc', true),
+      blockBar('TO_CHAR(sale_date)', 'date-tochar', true),
+      blockBar('Điều kiện khoảng', 'date-range'),
+    ]);
+    draw('smart', [
+      blockBar('Smart logic, bind parameter', 'smart-generic', true),
+      blockBar('Smart logic, giá trị viết thẳng', 'smart-literal'),
+      blockBar('Dynamic SQL, bind parameter', 'smart-dynamic'),
+    ]);
+  } catch (e) {
+    for (const el of document.querySelectorAll('[data-plan], [data-bars]')) {
+      el.textContent = `Không tải được số liệu (${e.message}). Chạy npm start rồi mở qua http://localhost:8000.`;
+    }
+  }
+</script>
+</body>
+</html>
